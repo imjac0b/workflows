@@ -7,6 +7,10 @@ on:
   - cron: "*/5 * * * *"
   workflow_dispatch:
 
+permissions:
+  contents: write
+  actions: write
+
 concurrency:
   group: "one"
   cancel-in-progress: true
