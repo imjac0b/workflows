@@ -40,4 +40,4 @@ jobs:
       - name: Retrigger workflow
         uses: benc-uk/workflow-dispatch@v1
         with:
-          workflow: Update Token
+          workflow: Node.js CI
