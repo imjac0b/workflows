@@ -30,11 +30,12 @@ jobs:
       uses: oven-sh/setup-bun@v2
 
     - name: Install Dependencies
-      run: bun i
+      run: |
+        cd main-repo
+        bun i
 
     - name: Run Scripts
       run: |
-        cd main-repo
         bun run index.ts app
 
     - name: Download Words File
