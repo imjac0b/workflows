@@ -1,8 +1,8 @@
 name: OWD
 
 on:
-  push:
-    branches: [ "main" ]
+  schedule:
+  - cron: "0 0 * * *"
 
   workflow_dispatch:
 
@@ -41,7 +41,7 @@ jobs:
       run: |
         cd main-repo
         mkdir available
-        bun run index.ts app
+        bun run index.ts app & bun run index.ts dev & bun run index.ts day & bun run index.ts ing & bun run index.ts page & bun run index.ts new & bun run index.ts rsvp & bun run index.ts dad & bun run index.ts zip & bun run index.ts foo & bun run index.ts mov & bun run index.ts phd & bun run index.ts esq & bun run index.ts prof & bun run index.ts boo & bun run index.ts meme & bun run index.ts nexus & bun run index.ts how & bun run index.ts soy
 
     - name: Checkout Second Repo
       uses: actions/checkout@v4
