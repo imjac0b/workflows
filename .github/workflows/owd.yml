@@ -34,14 +34,13 @@ jobs:
         cd main-repo
         bun i
 
+    - name: Download Words File
+      run: curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
+
     - name: Run Scripts
       run: |
         cd main-repo
         bun run index.ts app
-
-    - name: Download Words File
-      run: |
-        curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
 
     - name: Checkout Second Repo
       uses: actions/checkout@v4
