@@ -1,0 +1,69 @@
+name: Project 2
+
+on:
+  schedule:
+  - cron: "*/5 * * * *"
+
+  workflow_dispatch:
+
+concurrency:
+  group: "project-2"
+  cancel-in-progress: true
+
+jobs:
+  project2:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Main Repo
+      uses: actions/checkout@v4
+      with:
+        repository: "imjac0b/${{ secrets.PROJECT_2_REPO }}"
+        token: ${{ secrets.PROJECT_2_TOKEN }}
+        path: main-repo
+
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+
+    - name: Install Dependencies
+      run: |
+        cd main-repo
+        bun i
+      
+    - name: Run Scripts
+      run: |
+        cd main-repo
+        bun run index.ts
+
+    - name: Checkout Second Repo
+      uses: actions/checkout@v4
+      with:
+        repository: "imjac0b/${{ secrets.PROJECT_2_RESULT_REPO }}"
+        token: ${{ secrets.PROJECT_2_TOKEN }}
+        path: result-repo
+
+    - name: Copy Folder to Second Repo
+      run: |
+        cp -r main-repo/token.txt result-repo/
+
+    - name: Commit and Push Changes
+      run: |
+        cd result-repo
+        git config user.name github-actions
+        git config user.email github-actions@github.com
+        git add .
+        if [ -n "$(git status --porcelain)" ]; then
+          git commit -m "Update"
+          git push
+        else
+          echo "No changes to commit."
+        fi
+
+  keepalive-job:
+    name: Keepalive Workflow
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gautamkrishnar/keepalive-workflow@v2
