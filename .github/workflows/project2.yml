@@ -67,17 +67,3 @@ jobs:
         else
           echo "No changes to commit."
         fi
-
-  retrigger:
-    name: Retrigger workflow
-    runs-on: ubuntu-latest
-    if: '${{ always() }}'
-    needs: project2
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Retrigger workflow
-        uses: benc-uk/workflow-dispatch@v1
-        with:
-          workflow: Project 2
