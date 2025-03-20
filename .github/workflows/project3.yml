@@ -1,0 +1,52 @@
+name: Project 3
+
+on:
+  schedule:
+  - cron: "*/5 * * * *"
+
+  workflow_dispatch:
+
+concurrency:
+  group: "project-3"
+  cancel-in-progress: true
+
+jobs:
+  project3:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Main Repo
+      uses: actions/checkout@v4
+      with:
+        repository: "imjac0b/${{ secrets.PROJECT_3_REPO }}"
+        token: ${{ secrets.PROJECT_3_TOKEN }}
+
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+
+    - name: Install Dependencies
+      run: bun i
+      
+    - name: Run Scripts
+      run: bun run index.ts
+
+    - name: Setup Pages
+      uses: actions/configure-pages@v5
+      
+    - name: Upload artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: 'output'
+
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
+
+  keepalive-job:
+    name: Keepalive Workflow
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gautamkrishnar/keepalive-workflow@v2
