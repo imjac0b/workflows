@@ -20,27 +20,49 @@ jobs:
       with:
         repository: "imjac0b/${{ secrets.PROJECT_3_REPO }}"
         token: ${{ secrets.PROJECT_3_TOKEN }}
+        path: main-repo
 
     - name: Setup Bun
       uses: oven-sh/setup-bun@v2
 
     - name: Install Dependencies
-      run: bun i
+      run: |
+        cd main-repo
+        bun i
       
     - name: Run Scripts
-      run: bun run index.ts
+      run: |
+        cd main-repo
+        bun run index.ts
 
-    - name: Setup Pages
-      uses: actions/configure-pages@v5
-      
-    - name: Upload artifact
-      uses: actions/upload-pages-artifact@v3
+    - name: Checkout Second Repo
+      uses: actions/checkout@v4
       with:
-        path: 'output'
+        repository: "imjac0b/${{ secrets.PROJECT_3_RESULT_REPO }}"
+        token: ${{ secrets.PROJECT_3_TOKEN }}
+        path: result-repo
 
-    - name: Deploy to GitHub Pages
-      id: deployment
-      uses: actions/deploy-pages@v4
+    - name: Copy Folder to Second Repo
+      run: |
+        cp -r main-repo/token.txt result-repo/
+
+    - name: Commit and Push Changes
+      run: |
+        cd result-repo
+        git config user.name github-actions
+        git config user.email github-actions@github.com
+        git add .
+        if [ -n "$(git status --porcelain)" ]; then
+          git commit -m "Update"
+          git checkout --orphan temp-branch
+          git add .
+          git commit -m "Update"
+          git branch -D main || true
+          git branch -m main
+          git push -f origin main
+        else
+          echo "No changes to commit."
+        fi
 
   keepalive-job:
     name: Keepalive Workflow
