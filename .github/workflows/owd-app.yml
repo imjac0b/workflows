@@ -1,9 +1,8 @@
-name: OWD
+name: OWD-APP
 
 on:
-  #schedule:
-  #- cron: "0 0 * * *"
-
+  schedule:
+  - cron: "0 0 * * *"
   workflow_dispatch:
 
 permissions:
@@ -11,13 +10,12 @@ permissions:
   actions: write
 
 concurrency:
-  group: "owd"
+  group: "owd-app"
   cancel-in-progress: true
 
 jobs:
-  owd:
+  owd-app:
     runs-on: ubuntu-latest
-
     steps:
     - name: Checkout Main Repo
       uses: actions/checkout@v4
@@ -37,11 +35,11 @@ jobs:
     - name: Download Words File
       run: curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
 
-    - name: Run Scripts
+    - name: Run Script
       run: |
         cd main-repo
-        mkdir available
-        bun run index.ts app & bun run index.ts dev & bun run index.ts ing & bun run index.ts zip
+        mkdir -p available
+        bun run index.ts app
 
     - name: Checkout Second Repo
       uses: actions/checkout@v4
@@ -50,7 +48,7 @@ jobs:
         token: ${{ secrets.OWD_TOKEN }}
         path: result-repo
 
-    - name: Copy Folder to Second Repo
+    - name: Copy Results
       run: |
         cp -r main-repo/available/* result-repo/
 
@@ -61,7 +59,7 @@ jobs:
         git config user.email github-actions@github.com
         git add .
         if [ -n "$(git status --porcelain)" ]; then
-          git commit -m "Update"
+          git commit -m "Update app domains"
           git push
         else
           echo "No changes to commit."
