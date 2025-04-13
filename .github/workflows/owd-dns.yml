@@ -1,4 +1,4 @@
-name: OWD-COM
+name: OWD-DNS
 
 on:
   schedule:
@@ -10,12 +10,15 @@ permissions:
   actions: write
 
 concurrency:
-  group: "owd-com"
+  group: "owd-dns"
   cancel-in-progress: true
 
 jobs:
-  owd-com:
+  owd-dns:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tld: [com, ai, io, co, xyz, so, sh, link, gg, me, run, net, org]
     steps:
     - name: Checkout Main Repo
       uses: actions/checkout@v4
@@ -39,7 +42,7 @@ jobs:
       run: |
         cd main-repo
         mkdir -p available
-        bun check --tld com --dns
+        bun check --tld ${{ matrix.tld }} --dns
 
     - name: Checkout Second Repo
       uses: actions/checkout@v4
@@ -59,7 +62,7 @@ jobs:
         git config user.email github-actions@github.com
         git add .
         if [ -n "$(git status --porcelain)" ]; then
-          git commit -m "Update com domains"
+          git commit -m "Update domains"
           git push
         else
           echo "No changes to commit."
