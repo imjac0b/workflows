@@ -41,7 +41,6 @@ jobs:
       - name: Run Script without DNS
         run: |
           cd main-repo
-          mkdir -p available
           bun check --tld ${{ matrix.tld }}
 
       - name: Upload Results
@@ -135,7 +134,6 @@ jobs:
       - name: Run Script with DNS
         run: |
           cd main-repo
-          mkdir -p available
           bun check --tld ${{ matrix.tld }} --dns
 
       - name: Upload Results
@@ -173,7 +171,6 @@ jobs:
       - name: Run Script with Prefix
         run: |
           cd main-repo
-          mkdir -p available
           bun check --tld ${{ matrix.tld }} --dns --prefix ${{ matrix.prefix }}
 
       - name: Upload Results
@@ -211,7 +208,6 @@ jobs:
       - name: Run Script with Suffix
         run: |
           cd main-repo
-          mkdir -p available
           bun check --tld ${{ matrix.tld }} --dns --suffix ${{ matrix.suffix }}
 
       - name: Upload Results
