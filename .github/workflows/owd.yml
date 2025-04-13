@@ -14,41 +14,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check-tlds:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        tld: [app, boo, day, dev, how, ing, meme, mov, new, page, zip]
-    steps:
-      - name: Checkout Main Repo
-        uses: actions/checkout@v4
-        with:
-          repository: "imjac0b/${{ secrets.OWD_REPO }}"
-          token: ${{ secrets.OWD_TOKEN }}
-          path: main-repo
+  # check-tlds:
+  #   runs-on: ubuntu-latest
+  #   strategy:
+  #     matrix:
+  #       tld: [app, boo, day, dev, how, ing, meme, mov, new, page, zip]
+  #   steps:
+  #     - name: Checkout Main Repo
+  #       uses: actions/checkout@v4
+  #       with:
+  #         repository: "imjac0b/${{ secrets.OWD_REPO }}"
+  #         token: ${{ secrets.OWD_TOKEN }}
+  #         path: main-repo
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+  #     - name: Setup Bun
+  #       uses: oven-sh/setup-bun@v2
 
-      - name: Install Dependencies
-        run: |
-          cd main-repo
-          bun i
+  #     - name: Install Dependencies
+  #       run: |
+  #         cd main-repo
+  #         bun i
 
-      - name: Download Words File
-        run: curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
+  #     - name: Download Words File
+  #       run: curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
 
-      - name: Run Script without DNS
-        run: |
-          cd main-repo
-          bun check --tld ${{ matrix.tld }}
+  #     - name: Run Script without DNS
+  #       run: |
+  #         cd main-repo
+  #         bun check --tld ${{ matrix.tld }}
 
-      - name: Upload Results
-        uses: actions/upload-artifact@v4
-        with:
-          name: available-domains-${{ matrix.tld }}
-          path: main-repo/available/
-          retention-days: 1
+  #     - name: Upload Results
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: ${{ matrix.tld }}.txt
+  #         path: main-repo/available/${{ matrix.tld }}.txt
+  #         retention-days: 1
 
   check-dns-tlds:
     runs-on: ubuntu-latest
@@ -139,8 +139,8 @@ jobs:
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: available-domains-${{ matrix.tld }}
-          path: main-repo/available/
+          name: ${{ matrix.tld }}.txt
+          path: main-repo/available/${{ matrix.tld }}.txt
           retention-days: 1
 
   check-prefix-tlds:
@@ -176,8 +176,8 @@ jobs:
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: available-domains-${{ matrix.prefix }}-${{ matrix.tld }}
-          path: main-repo/available/
+          name: prefix/${{ matrix.prefix }}/${{ matrix.tld }}.txt
+          path: main-repo/available/prefix/${{ matrix.prefix }}/${{ matrix.tld }}.txt
           retention-days: 1
 
   check-suffix-tlds:
@@ -213,12 +213,12 @@ jobs:
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: available-domains-${{ matrix.suffix }}-${{ matrix.tld }}
-          path: main-repo/available/
+          name: suffix/${{ matrix.suffix }}/${{ matrix.tld }}.txt
+          path: main-repo/available/suffix/${{ matrix.suffix }}/${{ matrix.tld }}.txt
           retention-days: 1
 
   push-results:
-    needs: [check-tlds, check-dns-tlds, check-prefix-tlds, check-suffix-tlds]
+    needs: [check-dns-tlds, check-prefix-tlds, check-suffix-tlds]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Result Repo
@@ -236,7 +236,7 @@ jobs:
 
       - name: Copy Results to Repo
         run: |
-          find all-results -type f -name "*.txt" -exec cp {} result-repo/ \;
+          cp -R all-results/. result-repo/
 
       - name: Commit and Push Changes
         run: |
