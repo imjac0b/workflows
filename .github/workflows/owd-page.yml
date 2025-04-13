@@ -39,7 +39,7 @@ jobs:
       run: |
         cd main-repo
         mkdir -p available
-        bun run index.ts page
+        bun check --tld page
 
     - name: Checkout Second Repo
       uses: actions/checkout@v4
