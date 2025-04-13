@@ -59,7 +59,7 @@ jobs:
         git config user.email github-actions@github.com
         git add .
         if [ -n "$(git status --porcelain)" ]; then
-          git commit -m "Update app domains"
+          git commit -m "Update com domains"
           git push
         else
           echo "No changes to commit."
