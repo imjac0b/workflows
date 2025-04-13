@@ -282,10 +282,15 @@ jobs:
       - name: Generate Files List
         run: |
           cd result-repo
-          # Find all .txt files, print relative paths, sort them, and save to files.txt
-          # Exclude files.txt itself from the list
-          find . -name "*.txt" -not -name "metadata/files.txt" | sed 's|^\./||' | sort > metadata/files.txt
-          echo "Generated files.txt"
+          # Define the output file path without .txt
+          output_file="metadata/files"
+          # Create the metadata directory if it doesn't exist
+          mkdir -p "$(dirname "$output_file")"
+          # Find all .txt files, print relative paths, sort them, and save to the file
+          # Exclude the output file itself from the list
+          # Note: We still FIND *.txt files, but EXCLUDE the specific path ./metadata/files
+          find . -name "*.txt" -not -path "./$output_file" | sed 's|^\./||' | sort > "$output_file"
+          echo "Generated $output_file"
 
       - name: Commit and Push Changes
         run: |
