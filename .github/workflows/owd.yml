@@ -284,7 +284,7 @@ jobs:
           cd result-repo
           # Find all .txt files, print relative paths, sort them, and save to files.txt
           # Exclude files.txt itself from the list
-          find . -name "*.txt" -not -name "files.txt" | sed 's|^\./||' | sort > files.txt
+          find . -name "*.txt" -not -name "metadata/files.txt" | sed 's|^\./||' | sort > metadata/files.txt
           echo "Generated files.txt"
 
       - name: Commit and Push Changes
