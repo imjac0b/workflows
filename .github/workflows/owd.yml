@@ -221,20 +221,14 @@ jobs:
     needs: [check-dns-tlds, check-prefix-tlds, check-suffix-tlds]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Result Repo
-        uses: actions/checkout@v4
-        with:
-          repository: "imjac0b/${{ secrets.OWD_RESULT_REPO }}"
-          token: ${{ secrets.OWD_TOKEN }}
-          path: result-repo
-
       - name: Download All Results
         uses: actions/download-artifact@v4
         with:
-          path: all-results # Download all artifacts into this directory
+          path: all-results
 
       - name: Organize Results and Copy to Repo
         run: |
+          mkdir -p result-repo
           echo "Organizing downloaded artifacts..."
           # Loop through each downloaded artifact directory (named after the artifact)
           for artifact_dir in all-results/*; do
@@ -292,19 +286,12 @@ jobs:
           find . -name "*.txt" -not -path "./$output_file" | sed 's|^\./||' | sort > "$output_file"
           echo "Generated $output_file"
 
-      - name: Commit and Push Changes
-        run: |
-          cd result-repo
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add . # This will now include files.txt
-          # Check if there are changes staged
-          if git diff --staged --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "Update domains"
-            git push
-          fi
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy result-repo --project-name=${{ secrets.OWD_CF_PROJECT }}
 
   keepalive-job:
     name: Keepalive Workflow
