@@ -2,7 +2,7 @@ name: OWD
 
 on:
   schedule:
-  - cron: "0 0 * * *"
+    - cron: "0 0 * * *"
   workflow_dispatch:
 
 permissions:
@@ -14,59 +14,249 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  owd-dns:
+  check-tlds:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         tld: [app, boo, day, dev, how, ing, meme, mov, new, page, zip]
     steps:
-    - name: Checkout Main Repo
-      uses: actions/checkout@v4
-      with:
-        repository: "imjac0b/${{ secrets.OWD_REPO }}"
-        token: ${{ secrets.OWD_TOKEN }}
-        path: main-repo
+      - name: Checkout Main Repo
+        uses: actions/checkout@v4
+        with:
+          repository: "imjac0b/${{ secrets.OWD_REPO }}"
+          token: ${{ secrets.OWD_TOKEN }}
+          path: main-repo
 
-    - name: Setup Bun
-      uses: oven-sh/setup-bun@v2
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
 
-    - name: Install Dependencies
-      run: |
-        cd main-repo
-        bun i
+      - name: Install Dependencies
+        run: |
+          cd main-repo
+          bun i
 
-    - name: Download Words File
-      run: curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
+      - name: Download Words File
+        run: curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
 
-    - name: Run Script
-      run: |
-        cd main-repo
-        mkdir -p available
-        bun check --tld ${{ matrix.tld }}
+      - name: Run Script without DNS
+        run: |
+          cd main-repo
+          mkdir -p available
+          bun check --tld ${{ matrix.tld }}
 
-    - name: Checkout Second Repo
-      uses: actions/checkout@v4
-      with:
-        repository: "imjac0b/${{ secrets.OWD_RESULT_REPO }}"
-        token: ${{ secrets.OWD_TOKEN }}
-        path: result-repo
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: available-domains-${{ matrix.tld }}
+          path: main-repo/available/
+          retention-days: 1
 
-    - name: Copy Results
-      run: |
-        cp -r main-repo/available/* result-repo/
+  check-dns-tlds:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tld:
+          [
+            com,
+            ai,
+            io,
+            co,
+            xyz,
+            so,
+            sh,
+            link,
+            gg,
+            me,
+            run,
+            net,
+            org,
+            venture,
+            capital,
+            live,
+            new,
+            asia,
+            tech,
+            inc,
+            vc,
+            ly,
+            studio,
+            design,
+            club,
+            money,
+            online,
+            club,
+            money,
+            online,
+            cloud,
+            agency,
+            wtf,
+            chat,
+            tv,
+            bio,
+            site,
+            art,
+            shop,
+            domains,
+            blog,
+            finance,
+            work,
+            email,
+            fm,
+            page,
+            travel,
+            top,
+            info,
+            network,
+            win,
+            ltd,
+            vip,
+            biz,
+            games,
+            help,
+            video,
+            guide,
+          ]
+    steps:
+      - name: Checkout Main Repo
+        uses: actions/checkout@v4
+        with:
+          repository: "imjac0b/${{ secrets.OWD_REPO }}"
+          token: ${{ secrets.OWD_TOKEN }}
+          path: main-repo
 
-    - name: Commit and Push Changes
-      run: |
-        cd result-repo
-        git config user.name github-actions
-        git config user.email github-actions@github.com
-        git add .
-        if [ -n "$(git status --porcelain)" ]; then
-          git commit -m "Update ${{ matrix.tld }} domains"
-          git push
-        else
-          echo "No changes to commit."
-        fi
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Dependencies
+        run: |
+          cd main-repo
+          bun i
+
+      - name: Download Words File
+        run: curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
+
+      - name: Run Script with DNS
+        run: |
+          cd main-repo
+          mkdir -p available
+          bun check --tld ${{ matrix.tld }} --dns
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: available-domains-${{ matrix.tld }}
+          path: main-repo/available/
+          retention-days: 1
+
+  check-prefix-tlds:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tld: [com]
+        prefix: [get, my, use, try, go, the, buy]
+    steps:
+      - name: Checkout Main Repo
+        uses: actions/checkout@v4
+        with:
+          repository: "imjac0b/${{ secrets.OWD_REPO }}"
+          token: ${{ secrets.OWD_TOKEN }}
+          path: main-repo
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Dependencies
+        run: |
+          cd main-repo
+          bun i
+
+      - name: Download Words File
+        run: curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
+
+      - name: Run Script with Prefix
+        run: |
+          cd main-repo
+          mkdir -p available
+          bun check --tld ${{ matrix.tld }} --dns --prefix ${{ matrix.prefix }}
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: available-domains-${{ matrix.prefix }}-${{ matrix.tld }}
+          path: main-repo/available/
+          retention-days: 1
+
+  check-suffix-tlds:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tld: [com]
+        suffix: [app, hub, lab, hq, ai, box, now, api, gpt]
+    steps:
+      - name: Checkout Main Repo
+        uses: actions/checkout@v4
+        with:
+          repository: "imjac0b/${{ secrets.OWD_REPO }}"
+          token: ${{ secrets.OWD_TOKEN }}
+          path: main-repo
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Dependencies
+        run: |
+          cd main-repo
+          bun i
+
+      - name: Download Words File
+        run: curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
+
+      - name: Run Script with Suffix
+        run: |
+          cd main-repo
+          mkdir -p available
+          bun check --tld ${{ matrix.tld }} --dns --suffix ${{ matrix.suffix }}
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: available-domains-${{ matrix.suffix }}-${{ matrix.tld }}
+          path: main-repo/available/
+          retention-days: 1
+
+  push-results:
+    needs: [check-tlds, check-dns-tlds, check-prefix-tlds, check-suffix-tlds]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Result Repo
+        uses: actions/checkout@v4
+        with:
+          repository: "imjac0b/${{ secrets.OWD_RESULT_REPO }}"
+          token: ${{ secrets.OWD_TOKEN }}
+          path: result-repo
+
+      - name: Download All Results
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results
+          merge-multiple: false
+
+      - name: Copy Results to Repo
+        run: |
+          find all-results -type f -name "*.txt" -exec cp {} result-repo/ \;
+
+      - name: Commit and Push Changes
+        run: |
+          cd result-repo
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add .
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "Update domains"
+            git push
+          else
+            echo "No changes to commit."
+          fi
 
   keepalive-job:
     name: Keepalive Workflow
