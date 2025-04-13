@@ -176,7 +176,7 @@ jobs:
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: prefix/${{ matrix.prefix }}/${{ matrix.tld }}.txt
+          name: prefix-${{ matrix.prefix }}-${{ matrix.tld }}.txt
           path: main-repo/available/prefix/${{ matrix.prefix }}/${{ matrix.tld }}.txt
           retention-days: 1
 
@@ -213,7 +213,7 @@ jobs:
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: suffix/${{ matrix.suffix }}/${{ matrix.tld }}.txt
+          name: suffix-${{ matrix.suffix }}-${{ matrix.tld }}.txt
           path: main-repo/available/suffix/${{ matrix.suffix }}/${{ matrix.tld }}.txt
           retention-days: 1
 
@@ -231,24 +231,74 @@ jobs:
       - name: Download All Results
         uses: actions/download-artifact@v4
         with:
-          path: all-results
-          merge-multiple: false
+          path: all-results # Download all artifacts into this directory
 
-      - name: Copy Results to Repo
+      - name: Organize Results and Copy to Repo
         run: |
-          cp -R all-results/. result-repo/
+          echo "Organizing downloaded artifacts..."
+          # Loop through each downloaded artifact directory (named after the artifact)
+          for artifact_dir in all-results/*; do
+            if [ -d "$artifact_dir" ]; then
+              echo "Processing artifact directory: $artifact_dir"
+              # The actual result file is inside this directory
+              find "$artifact_dir" -type f -name "*.txt" -print0 | while IFS= read -r -d $'\0' file; do
+                artifact_name=$(basename "$artifact_dir") # e.g., prefix-try-com.txt or com.txt
+                echo "  Found file: $file with artifact name: $artifact_name"
+
+                # Reconstruct the target path based on the artifact name
+                if [[ "$artifact_name" == prefix-*-* ]]; then
+                  # Extract prefix and tld: prefix-<prefix>-<tld>.txt
+                  target_path=$(echo "$artifact_name" | sed -E 's/^prefix-([^-]+)-(.+)\.txt$/prefix\/\1\/\2.txt/')
+                elif [[ "$artifact_name" == suffix-*-* ]]; then
+                   # Extract suffix and tld: suffix-<suffix>-<tld>.txt
+                  target_path=$(echo "$artifact_name" | sed -E 's/^suffix-([^-]+)-(.+)\.txt$/suffix\/\1\/\2.txt/')
+                else
+                  # Simple TLD file, goes to root
+                  target_path="$artifact_name"
+                fi
+
+                target_dir=$(dirname "$target_path")
+                target_file_path="result-repo/$target_path"
+                echo "  Determined target path: $target_file_path"
+
+                # Create target directory structure in result-repo if it doesn't exist
+                if [[ "$target_dir" != "." ]]; then
+                  mkdir -p "result-repo/$target_dir"
+                  echo "  Ensured directory exists: result-repo/$target_dir"
+                fi
+
+                # Move the file to the correct location in result-repo
+                mv "$file" "$target_file_path"
+                echo "  Moved file to $target_file_path"
+              done
+            else
+              echo "Skipping non-directory item: $artifact_dir"
+            fi
+          done
+          echo "Finished organizing artifacts."
+          # Clean up the download directory
+          rm -rf all-results
+
+      - name: Generate Files List
+        run: |
+          cd result-repo
+          # Find all .txt files, print relative paths, sort them, and save to files.txt
+          # Exclude files.txt itself from the list
+          find . -name "*.txt" -not -name "files.txt" | sed 's|^\./||' | sort > files.txt
+          echo "Generated files.txt"
 
       - name: Commit and Push Changes
         run: |
           cd result-repo
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git add .
-          if [ -n "$(git status --porcelain)" ]; then
+          git add . # This will now include files.txt
+          # Check if there are changes staged
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
             git commit -m "Update domains"
             git push
-          else
-            echo "No changes to commit."
           fi
 
   keepalive-job:
