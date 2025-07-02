@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  project2:
+  project4:
     runs-on: ubuntu-latest
 
     steps:
