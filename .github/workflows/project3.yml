@@ -1,8 +1,8 @@
 name: Project 3
 
 on:
-  #schedule:
-  #- cron: "*/5 * * * *"
+  schedule:
+  - cron: "*/5 * * * *"
 
   workflow_dispatch:
 
@@ -54,12 +54,7 @@ jobs:
         git add .
         if [ -n "$(git status --porcelain)" ]; then
           git commit -m "Update"
-          git checkout --orphan temp-branch
-          git add .
-          git commit -m "Update"
-          git branch -D main || true
-          git branch -m main
-          git push -f origin main
+          git push origin main
         else
           echo "No changes to commit."
         fi
