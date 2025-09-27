@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check-tlds:
+  check-tlds-1:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -276,6 +276,44 @@ jobs:
             town,
             toys,
             trading,
+          ]
+    steps:
+      - name: Checkout Main Repo
+        uses: actions/checkout@v4
+        with:
+          repository: "imjac0b/${{ secrets.OWD_REPO }}"
+          token: ${{ secrets.OWD_TOKEN }}
+          path: main-repo
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Dependencies
+        run: |
+          cd main-repo
+          bun i
+
+      - name: Download Words File
+        run: curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
+
+      - name: Run Script without DNS
+        run: |
+          cd main-repo
+          bun check --tld ${{ matrix.tld }}
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.tld }}.txt
+          path: main-repo/available/${{ matrix.tld }}.txt
+          retention-days: 1
+
+  check-tlds-2:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tld:
+          [
             training,
             university,
             vacations,
@@ -532,20 +570,43 @@ jobs:
             zip,
             am,
             be,
-            cl,
-            cm,
-            cx,
-            gy,
-            im,
-            la,
-            li,
-            my,
-            net.nz,
-            org.nz,
-            pl,
-            tl,
-            ws,
           ]
+    steps:
+      - name: Checkout Main Repo
+        uses: actions/checkout@v4
+        with:
+          repository: "imjac0b/${{ secrets.OWD_REPO }}"
+          token: ${{ secrets.OWD_TOKEN }}
+          path: main-repo
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Dependencies
+        run: |
+          cd main-repo
+          bun i
+
+      - name: Download Words File
+        run: curl -L -o main-repo/words_alpha.txt https://github.com/dwyl/english-words/raw/refs/heads/master/words_alpha.txt
+
+      - name: Run Script without DNS
+        run: |
+          cd main-repo
+          bun check --tld ${{ matrix.tld }}
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.tld }}.txt
+          path: main-repo/available/${{ matrix.tld }}.txt
+          retention-days: 1
+
+  check-tlds-3:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tld: [cl, cm, cx, gy, im, la, li, my, net.nz, org.nz, pl, tl, ws]
     steps:
       - name: Checkout Main Repo
         uses: actions/checkout@v4
@@ -652,7 +713,14 @@ jobs:
           retention-days: 1
 
   push-results:
-    needs: [check-tlds, check-prefix-tlds, check-suffix-tlds]
+    needs:
+      [
+        check-tlds-1,
+        check-tlds-2,
+        check-tlds-3,
+        check-prefix-tlds,
+        check-suffix-tlds,
+      ]
     runs-on: ubuntu-latest
     steps:
       - name: Download All Results
@@ -664,38 +732,26 @@ jobs:
         run: |
           mkdir -p result-repo
           echo "Organizing downloaded artifacts..."
-          # Loop through each downloaded artifact directory (named after the artifact)
           for artifact_dir in all-results/*; do
             if [ -d "$artifact_dir" ]; then
               echo "Processing artifact directory: $artifact_dir"
-              # The actual result file is inside this directory
               find "$artifact_dir" -type f -name "*.txt" -print0 | while IFS= read -r -d $'\0' file; do
-                artifact_name=$(basename "$artifact_dir") # e.g., prefix-try-com.txt or com.txt
+                artifact_name=$(basename "$artifact_dir")
                 echo "  Found file: $file with artifact name: $artifact_name"
-
-                # Reconstruct the target path based on the artifact name
                 if [[ "$artifact_name" == prefix-*-* ]]; then
-                  # Extract prefix and tld: prefix-<prefix>-<tld>.txt
-                  target_path=$(echo "$artifact_name" | sed -E 's/^prefix-([^-]+)-(.+)\.txt$/prefix\/\1\/\2.txt/')
+                  target_path=$(echo "$artifact_name" | sed -E 's/^prefix-([^-]+)-(.+)\\.txt$/prefix\\/\\1\\/\\2.txt/')
                 elif [[ "$artifact_name" == suffix-*-* ]]; then
-                   # Extract suffix and tld: suffix-<suffix>-<tld>.txt
-                  target_path=$(echo "$artifact_name" | sed -E 's/^suffix-([^-]+)-(.+)\.txt$/suffix\/\1\/\2.txt/')
+                  target_path=$(echo "$artifact_name" | sed -E 's/^suffix-([^-]+)-(.+)\\.txt$/suffix\\/\\1\\/\\2.txt/')
                 else
-                  # Simple TLD file, goes to root
                   target_path="$artifact_name"
                 fi
-
                 target_dir=$(dirname "$target_path")
                 target_file_path="result-repo/$target_path"
                 echo "  Determined target path: $target_file_path"
-
-                # Create target directory structure in result-repo if it doesn't exist
                 if [[ "$target_dir" != "." ]]; then
                   mkdir -p "result-repo/$target_dir"
                   echo "  Ensured directory exists: result-repo/$target_dir"
                 fi
-
-                # Move the file to the correct location in result-repo
                 mv "$file" "$target_file_path"
                 echo "  Moved file to $target_file_path"
               done
@@ -704,20 +760,14 @@ jobs:
             fi
           done
           echo "Finished organizing artifacts."
-          # Clean up the download directory
           rm -rf all-results
 
       - name: Generate Files List
         run: |
           cd result-repo
-          # Define the output file path without .txt
           output_file="metadata/files"
-          # Create the metadata directory if it doesn't exist
           mkdir -p "$(dirname "$output_file")"
-          # Find all .txt files, print relative paths, sort them, and save to the file
-          # Exclude the output file itself from the list
-          # Note: We still FIND *.txt files, but EXCLUDE the specific path ./metadata/files
-          find . -name "*.txt" -not -path "./$output_file" | sed 's|^\./||' | sort > "$output_file"
+          find . -name "*.txt" -not -path "./$output_file" | sed 's|^\\./||' | sort > "$output_file"
           echo "Generated $output_file"
 
       - name: Deploy
