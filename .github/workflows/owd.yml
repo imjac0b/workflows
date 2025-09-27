@@ -652,7 +652,7 @@ jobs:
           retention-days: 1
 
   push-results:
-    needs: [check-tlds, check-dns-tlds, check-prefix-tlds, check-suffix-tlds]
+    needs: [check-tlds, check-prefix-tlds, check-suffix-tlds]
     runs-on: ubuntu-latest
     steps:
       - name: Download All Results
