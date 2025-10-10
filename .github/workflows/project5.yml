@@ -2,7 +2,7 @@ name: Project 5
 
 on:
   schedule:
-  - cron: "0 0 * * *"
+    - cron: "0 0 * * *"
 
   workflow_dispatch:
 
@@ -19,26 +19,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Main Repo
-      uses: actions/checkout@v4
-      with:
-        repository: "imjac0b/${{ secrets.PROJECT_5_REPO }}"
-        token: ${{ secrets.PROJECT_5_TOKEN }}
+      - name: Checkout Main Repo
+        uses: actions/checkout@v4
+        with:
+          repository: "imjac0b/${{ secrets.PROJECT_5_REPO }}"
+          token: ${{ secrets.PROJECT_5_TOKEN }}
 
-    - name: Setup Bun
-      uses: oven-sh/setup-bun@v2
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
 
-    - name: Install Dependencies
-      run: |
-        bun i
-      
-    - name: Run Scripts
-      run: |
-        bun run index.ts
+      - name: Install Dependencies
+        run: |
+          bun i
 
-    - name: Deploy
-      uses: cloudflare/wrangler-action@v3
-      with:
-        apiToken: ${{ secrets.PROJECT_5_CLOUDFLARE_API_TOKEN }}
-        accountId: ${{ secrets.PROJECT_5_CLOUDFLARE_ACCOUNT_ID }}
-        command: pages deploy output --project-name=${{ secrets.PROJECT_5_CLOUDFLARE_PROJECT }}
+      - name: Run Scripts
+        run: |
+          bun run index.ts
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.PROJECT_5_CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.PROJECT_5_CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy output --project-name=${{ secrets.PROJECT_5_CLOUDFLARE_PROJECT }}
+          quiet: true
+
+      - name: Purge cache
+        uses: nathanvaughn/actions-cloudflare-purge@v4.0.0
+        with:
+          cf_zone: ${{ secrets.PROJECT_5_CLOUDFLARE_ZONE }}
+          cf_auth: ${{ secrets.PROJECT_5_CLOUDFLARE_API_TOKEN }}
+          hosts: ${{ secrets.PROJECT_5_CLOUDFLARE_CACHE_HOSTS }}
