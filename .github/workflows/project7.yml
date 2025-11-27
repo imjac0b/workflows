@@ -27,8 +27,9 @@ jobs:
           - app: Extension
             repo: imjac0b/chrome-extension
             scheme: "Jacob (iOS)"
+            product_name: Jacob
             subdir: Jacob
-            setup: bun install --silent --frozen-lockfile && bun build:safari
+            setup: bun install && bun build:safari > /dev/null
 
     steps:
       - name: Checkout App Repository
@@ -40,22 +41,21 @@ jobs:
 
       - name: Setup Bun
         if: contains(matrix.setup, 'bun')
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
 
       - name: Build Archive (Unsigned)
         run: |
-          # Capture root path to ensure archive goes to the right place regardless of cd
           WORK_DIR=$(pwd)
           ARCHIVE_PATH="$WORK_DIR/dist/build/App.xcarchive"
           mkdir -p "$WORK_DIR/dist"
           
-          # Run setup commands (Bun build) if defined
           if [ ! -z "${{ matrix.setup }}" ]; then
              echo "Running setup commands..."
              ${{ matrix.setup }}
           fi
 
-          # Change subdirectory if defined (e.g., cd Jacob)
           if [ ! -z "${{ matrix.subdir }}" ]; then
              echo "Changing directory to ${{ matrix.subdir }}"
              cd "${{ matrix.subdir }}"
@@ -73,11 +73,11 @@ jobs:
       - name: Extract Metadata & Icon
         id: metadata
         run: |
-          # Note: We use the absolute path or relative to root. 
-          # Since the previous step used absolute path for output, 
-          # the archive is at ./dist/build/App.xcarchive in the workspace root.
-          
-          APP_BUNDLE_PATH="./dist/build/App.xcarchive/Products/Applications/${{ matrix.scheme }}.app"
+          SCHEME="${{ matrix.scheme }}"
+          PRODUCT="${{ matrix.product_name }}"
+          [ -z "$PRODUCT" ] && PRODUCT="$SCHEME"
+
+          APP_BUNDLE_PATH="./dist/build/App.xcarchive/Products/Applications/$PRODUCT.app"
           INFO_PLIST="$APP_BUNDLE_PATH/Info.plist"
           
           VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST")
@@ -102,7 +102,7 @@ jobs:
             "name": "$DISPLAY_NAME",
             "bundleIdentifier": "$BUNDLE_ID",
             "version": "$VERSION",
-            "scheme": "${{ matrix.scheme }}"
+            "scheme": "$SCHEME"
           }
           EOF
           
@@ -112,15 +112,20 @@ jobs:
         env:
           ZIP_PASS: ${{ secrets.PROJECT_7_TOKEN }}
         run: |
+          SCHEME="${{ matrix.scheme }}"
+          PRODUCT="${{ matrix.product_name }}"
+          [ -z "$PRODUCT" ] && PRODUCT="$SCHEME"
+
           cd dist
           mkdir -p Payload
-          cp -r ./build/App.xcarchive/Products/Applications/${{ matrix.scheme }}.app ./Payload/
           
-          zip -r ./${{ matrix.scheme }}.ipa ./Payload
+          cp -r "./build/App.xcarchive/Products/Applications/$PRODUCT.app" ./Payload/
           
-          zip -P "$ZIP_PASS" -r bundle.zip ${{ matrix.scheme }}.ipa metadata.json icon.png
+          zip -r "$SCHEME.ipa" ./Payload
           
-          rm -rf Payload build ${{ matrix.scheme }}.ipa metadata.json icon.png
+          zip -P "$ZIP_PASS" -r bundle.zip "$SCHEME.ipa" metadata.json icon.png
+          
+          rm -rf Payload build "$SCHEME.ipa" metadata.json icon.png
 
       - name: Upload Encrypted Artifact
         uses: actions/upload-artifact@v4
