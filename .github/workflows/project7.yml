@@ -1,0 +1,188 @@
+name: Project 7
+
+on:
+  workflow_dispatch:
+
+env:
+  TARGET_REPO: imjac0b/${{ secrets.PROJECT_7_REPO }}
+  TARGET_BASE_URL: ${{ secrets.PROJECT_7_URL }}
+  ARTIFACT_PATTERN: app-*
+
+jobs:
+  build:
+    name: Build ${{ matrix.app }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: Verse
+            repo: imjac0b/verse
+            scheme: Verse
+            
+    steps:
+      - name: Checkout App Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          fetch-depth: 1
+
+      - name: Build Archive (Unsigned)
+        run: |
+          mkdir -p dist
+          xcodebuild -scheme "${{ matrix.scheme }}" \
+            -sdk iphoneos \
+            -configuration Release \
+            archive \
+            -archivePath ./dist/build/App.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Extract Metadata
+        id: metadata
+        run: |
+          APP_BUNDLE_PATH="./dist/build/App.xcarchive/Products/Applications/${{ matrix.scheme }}.app"
+          INFO_PLIST="$APP_BUNDLE_PATH/Info.plist"
+          
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST")
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$INFO_PLIST")
+          DISPLAY_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$INFO_PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Print :CFBundleName" "$INFO_PLIST")
+          
+          # Get Git Info
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          # Get commit message (subject only), escape backslashes and quotes for JSON safety
+          COMMIT_MSG=$(git log -1 --pretty=%s | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+          
+          cat <<EOF > dist/metadata.json
+          {
+            "name": "$DISPLAY_NAME",
+            "bundleIdentifier": "$BUNDLE_ID",
+            "version": "$VERSION",
+            "scheme": "${{ matrix.scheme }}",
+            "commitHash": "$COMMIT_HASH",
+            "commitMsg": "$COMMIT_MSG"
+          }
+          EOF
+
+      - name: Package IPA
+        run: |
+          cd dist
+          mkdir -p Payload
+          cp -r ./build/App.xcarchive/Products/Applications/${{ matrix.scheme }}.app ./Payload/
+          zip -r ./${{ matrix.scheme }}.ipa ./Payload
+          rm -rf ./Payload ./build
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.scheme }}
+          path: |
+            dist/${{ matrix.scheme }}.ipa
+            dist/metadata.json
+          retention-days: 1
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: ${{ env.ARTIFACT_PATTERN }}
+          merge-multiple: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate Source & Prepare
+        run: |
+          python3 -c '
+          import os
+          import json
+          import shutil
+          from datetime import datetime
+
+          target_url = os.environ["TARGET_BASE_URL"]
+          output_dir = "release_dist"
+          os.makedirs(output_dir, exist_ok=True)
+          
+          source_json = {
+              "name": "imjac0b Apps",
+              "identifier": "com.imjac0b.altstore",
+              "apps": []
+          }
+          
+          artifacts_root = "artifacts"
+          
+          for artifact_folder in os.listdir(artifacts_root):
+              folder_path = os.path.join(artifacts_root, artifact_folder)
+              if not os.path.isdir(folder_path): continue
+                  
+              meta_file = os.path.join(folder_path, "metadata.json")
+              if not os.path.exists(meta_file): continue
+                  
+              with open(meta_file, "r") as f:
+                  meta = json.load(f)
+              
+              scheme = meta["scheme"]
+              ipa_filename = f"{scheme}.ipa"
+              ipa_src = os.path.join(folder_path, ipa_filename)
+              
+              if os.path.exists(ipa_src):
+                  shutil.copy2(ipa_src, os.path.join(output_dir, ipa_filename))
+                  
+                  # Format: "Feat: New UI (a1b2c3d) - 2025-11-27"
+                  commit_msg = meta.get("commitMsg", "Update")
+                  commit_hash = meta.get("commitHash", "unknown")
+                  date_str = datetime.now().strftime("%Y-%m-%d")
+                  
+                  version_desc = f"{commit_msg} ({commit_hash})\nUpdated: {date_str}"
+                  
+                  app_entry = {
+                      "name": meta["name"],
+                      "bundleIdentifier": meta["bundleIdentifier"],
+                      "developerName": "imjac0b",
+                      "version": meta["version"],
+                      "versionDate": date_str,
+                      "versionDescription": version_desc,
+                      "downloadURL": f"{target_url}/{ipa_filename}",
+                      "localizedDescription": f"{meta["name"]} by imjac0b",
+                      "iconURL": f"{target_url}/icon.png",
+                      "size": os.path.getsize(ipa_src)
+                  }
+                  source_json["apps"].append(app_entry)
+
+          with open(os.path.join(output_dir, "apps.json"), "w") as f:
+              json.dump(source_json, f, indent=2)
+          '
+
+      - name: Force Push to Target Repo
+        env:
+          API_TOKEN_GITHUB: ${{ secrets.PROJECT_7_TOKEN }}
+        run: |
+          cd release_dist
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          git checkout -b main
+          git add .
+          git commit -m "Deploy Apps: $(date)"
+          
+          git remote add origin https://x-access-token:$API_TOKEN_GITHUB@github.com/$TARGET_REPO.git
+          git push -u --force origin main
+
+      - name: Cleanup Artifacts
+        if: always()
+        uses: geekyeggo/delete-artifact@v2
+        with:
+          name: ${{ env.ARTIFACT_PATTERN }}
+          failOnError: false
