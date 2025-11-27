@@ -146,7 +146,7 @@ jobs:
 
       - name: Generate Source & Prepare
         env:
-          FOLDER_PASS: ${{ secrets.PASSWORD }}
+          FOLDER_PASS: ${{ secrets.PROJECT_7_PASSWORD }}
         run: |
           cat << 'EOF' > gen_altstore.py
           import os
