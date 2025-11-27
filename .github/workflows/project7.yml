@@ -33,13 +33,15 @@ jobs:
       - name: Build Archive (Unsigned)
         run: |
           mkdir -p dist
+          
           xcodebuild -scheme "${{ matrix.scheme }}" \
             -sdk iphoneos \
             -configuration Release \
             archive \
             -archivePath ./dist/build/App.xcarchive \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_REQUIRED=NO \
+            -quiet
 
       - name: Extract Metadata & Icon
         id: metadata
@@ -143,6 +145,8 @@ jobs:
           python-version: '3.11'
 
       - name: Generate Source & Prepare
+        env:
+          FOLDER_PASS: ${{ secrets.PROJECT_7_PASSWORD }} 
         run: |
           cat << 'EOF' > gen_altstore.py
           import os
@@ -150,20 +154,21 @@ jobs:
           import shutil
           from datetime import datetime
           
-          target_url = os.environ["TARGET_BASE_URL"]
+          root_url = os.environ["TARGET_BASE_URL_ROOT"]
+          folder_pass = os.environ["FOLDER_PASS"] # This is the secret folder name
           dev_name = os.environ["DEVELOPER_NAME"]
-          output_dir = "release_dist"
+          
+          # Everything goes into release_dist/{folder_pass}/
+          output_dir = os.path.join("release_dist", folder_pass)
           os.makedirs(output_dir, exist_ok=True)
           
-          # Load base JSON from env
+          # The public URL will include the password folder
+          target_url = f"{root_url}/{folder_pass}"
+          
           source_json = json.loads(os.environ["SOURCE_JSON_BASE"])
           
           artifacts_root = "artifacts"
-          
-          if os.path.exists(artifacts_root):
-              folders = sorted(os.listdir(artifacts_root))
-          else:
-              folders = []
+          folders = sorted(os.listdir(artifacts_root)) if os.path.exists(artifacts_root) else []
           
           for artifact_folder in folders:
               folder_path = os.path.join(artifacts_root, artifact_folder)
@@ -185,12 +190,13 @@ jobs:
               if os.path.exists(ipa_src):
                   shutil.copy2(ipa_src, os.path.join(output_dir, ipa_filename))
                   
-                  # Handle Icon
                   final_icon_url = ""
                   if os.path.exists(icon_src) and os.path.getsize(icon_src) > 0:
                       shutil.copy2(icon_src, os.path.join(output_dir, icon_filename))
                       final_icon_url = f"{target_url}/{icon_filename}"
                   else:
+                      # Assuming default icon is also in the secret folder if uploaded manually,
+                      # or use a generic public one. We'll point to the secret one.
                       final_icon_url = f"{target_url}/default_icon.png"
 
                   commit_msg = meta.get("commitMsg", "Update")
@@ -213,6 +219,7 @@ jobs:
                   source_json["apps"].append(app_entry)
                   print(f"Processed {meta['name']}")
           
+          # Save apps.json inside the secret folder
           with open(os.path.join(output_dir, "apps.json"), "w") as f:
               json.dump(source_json, f, indent=2)
           EOF
@@ -237,7 +244,7 @@ jobs:
 
       - name: Cleanup Artifacts
         if: always()
-        uses: geekyeggo/delete-artifact@v2
+        uses: geekyeggo/delete-artifact@v5
         with:
           name: ${{ env.ARTIFACT_PATTERN }}
           failOnError: false
