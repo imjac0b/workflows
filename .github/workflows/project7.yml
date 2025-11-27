@@ -26,6 +26,7 @@ jobs:
         with:
           repository: ${{ matrix.repo }}
           fetch-depth: 1
+          token: ${{ secrets.PROJECT_7_TOKEN }}
 
       - name: Build Archive (Unsigned)
         run: |
