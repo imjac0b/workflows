@@ -146,23 +146,21 @@ jobs:
 
       - name: Generate Source & Prepare
         env:
-          FOLDER_PASS: ${{ secrets.PROJECT_7_PASSWORD }} 
+          FOLDER_PASS: ${{ secrets.PASSWORD }}
         run: |
           cat << 'EOF' > gen_altstore.py
           import os
           import json
           import shutil
-          from datetime import datetime
+          from datetime import datetime, timezone
           
           root_url = os.environ["TARGET_BASE_URL_ROOT"]
-          folder_pass = os.environ["FOLDER_PASS"] # This is the secret folder name
+          folder_pass = os.environ["FOLDER_PASS"]
           dev_name = os.environ["DEVELOPER_NAME"]
           
-          # Everything goes into release_dist/{folder_pass}/
           output_dir = os.path.join("release_dist", folder_pass)
           os.makedirs(output_dir, exist_ok=True)
           
-          # The public URL will include the password folder
           target_url = f"{root_url}/{folder_pass}"
           
           source_json = json.loads(os.environ["SOURCE_JSON_BASE"])
@@ -195,15 +193,20 @@ jobs:
                       shutil.copy2(icon_src, os.path.join(output_dir, icon_filename))
                       final_icon_url = f"{target_url}/{icon_filename}"
                   else:
-                      # Assuming default icon is also in the secret folder if uploaded manually,
-                      # or use a generic public one. We'll point to the secret one.
                       final_icon_url = f"{target_url}/default_icon.png"
 
                   commit_msg = meta.get("commitMsg", "Update")
                   commit_hash = meta.get("commitHash", "unknown")
-                  date_str = datetime.now().strftime("%Y-%m-%d")
-                  version_desc = f"{commit_msg} ({commit_hash})\nUpdated: {date_str}"
                   
+                  # Dates
+                  now = datetime.now(timezone.utc)
+                  date_str = now.strftime("%Y-%m-%d") # Standard date
+                  iso_date_str = now.strftime("%Y-%m-%dT%H:%M:%SZ") # ISO format for versions
+                  
+                  version_desc = f"{commit_msg} ({commit_hash})\nUpdated: {date_str}"
+                  file_size = os.path.getsize(ipa_src)
+                  
+                  # Create the main entry including the versions array
                   app_entry = {
                       "name": meta['name'],
                       "bundleIdentifier": meta['bundleIdentifier'],
@@ -214,12 +217,20 @@ jobs:
                       "downloadURL": f"{target_url}/{ipa_filename}",
                       "localizedDescription": f"{meta['name']} by {dev_name}",
                       "iconURL": final_icon_url,
-                      "size": os.path.getsize(ipa_src)
+                      "size": file_size,
+                      "versions": [
+                          {
+                              "version": meta['version'],
+                              "date": iso_date_str,
+                              "localizedDescription": version_desc,
+                              "downloadURL": f"{target_url}/{ipa_filename}",
+                              "size": file_size
+                          }
+                      ]
                   }
                   source_json["apps"].append(app_entry)
                   print(f"Processed {meta['name']}")
           
-          # Save apps.json inside the secret folder
           with open(os.path.join(output_dir, "apps.json"), "w") as f:
               json.dump(source_json, f, indent=2)
           EOF
