@@ -5,7 +5,7 @@ on:
 
 env:
   TARGET_REPO: imjac0b/${{ secrets.PROJECT_7_REPO }}
-  TARGET_BASE_URL: ${{ secrets.PROJECT_7_URL }}
+  TARGET_BASE_URL_ROOT: ${{ secrets.PROJECT_7_URL }}
   ARTIFACT_PATTERN: app-*
   DEVELOPER_NAME: ${{ secrets.PROJECT_7_DEVELOPER_NAME }}
   SOURCE_JSON_BASE: ${{ secrets.PROJECT_7_SOURCE_JSON_BASE }}
