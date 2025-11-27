@@ -7,6 +7,8 @@ env:
   TARGET_REPO: imjac0b/${{ secrets.PROJECT_7_REPO }}
   TARGET_BASE_URL: ${{ secrets.PROJECT_7_URL }}
   ARTIFACT_PATTERN: app-*
+  DEVELOPER_NAME: ${{ secrets.PROJECT_7_DEVELOPER_NAME }}
+  SOURCE_JSON_BASE: ${{ secrets.PROJECT_7_SOURCE_JSON_BASE }}
 
 jobs:
   build:
@@ -39,7 +41,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
 
-      - name: Extract Metadata
+      - name: Extract Metadata & Icon
         id: metadata
         run: |
           APP_BUNDLE_PATH="./dist/build/App.xcarchive/Products/Applications/${{ matrix.scheme }}.app"
@@ -49,37 +51,58 @@ jobs:
           BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$INFO_PLIST")
           DISPLAY_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$INFO_PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Print :CFBundleName" "$INFO_PLIST")
           
-          # Get Git Info
           COMMIT_HASH=$(git rev-parse --short HEAD)
-          # Get commit message (subject only), escape backslashes and quotes for JSON safety
           COMMIT_MSG=$(git log -1 --pretty=%s | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
           
+          # Try to find the largest icon in the bundle
+          # Usually named AppIcon60x60@3x.png or similar if not in Assets.car
+          # Since Xcode compiles assets, we'll look for any png with 'Icon' in the name
+          # Or we can try to export it using sips from the compiled icon if available (complex)
+          
+          # SIMPLE METHOD: Look for the AppIcon in the source tree first? No, we only have the build.
+          # FALLBACK: We will search the .app for any PNG that looks like an icon.
+          
+          find "$APP_BUNDLE_PATH" -name "AppIcon*.png" | sort -r | head -n 1 > icon_path.txt
+          ICON_SRC=$(cat icon_path.txt)
+          
+          if [ -z "$ICON_SRC" ]; then
+             echo "No raw icon found (likely in Assets.car). using placeholder."
+             touch dist/icon.png
+          else
+             cp "$ICON_SRC" dist/icon.png
+          fi
+
           cat <<EOF > dist/metadata.json
           {
             "name": "$DISPLAY_NAME",
             "bundleIdentifier": "$BUNDLE_ID",
             "version": "$VERSION",
-            "scheme": "${{ matrix.scheme }}",
-            "commitHash": "$COMMIT_HASH",
-            "commitMsg": "$COMMIT_MSG"
+            "scheme": "${{ matrix.scheme }}"
           }
           EOF
+          
+          python3 -c "import json; f='dist/metadata.json'; d=json.load(open(f)); d.update({'commitHash': '$COMMIT_HASH', 'commitMsg': '$COMMIT_MSG'}); json.dump(d, open(f,'w'))"
 
       - name: Package IPA
+        env:
+          ZIP_PASS: ${{ secrets.PROJECT_7_TOKEN }}
         run: |
           cd dist
           mkdir -p Payload
           cp -r ./build/App.xcarchive/Products/Applications/${{ matrix.scheme }}.app ./Payload/
+          
           zip -r ./${{ matrix.scheme }}.ipa ./Payload
-          rm -rf ./Payload ./build
+          
+          # Include icon.png in the encrypted bundle
+          zip -P "$ZIP_PASS" -r bundle.zip ${{ matrix.scheme }}.ipa metadata.json icon.png
+          
+          rm -rf Payload build ${{ matrix.scheme }}.ipa metadata.json icon.png
 
-      - name: Upload Artifact
+      - name: Upload Encrypted Artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-${{ matrix.scheme }}
-          path: |
-            dist/${{ matrix.scheme }}.ipa
-            dist/metadata.json
+          path: dist/bundle.zip
           retention-days: 1
 
   publish:
@@ -91,12 +114,28 @@ jobs:
       actions: write
     
     steps:
-      - name: Download All Artifacts
+      - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: ${{ env.ARTIFACT_PATTERN }}
           merge-multiple: false
+
+      - name: Decrypt Artifacts
+        env:
+          ZIP_PASS: ${{ secrets.PROJECT_7_TOKEN }}
+        run: |
+          for app_dir in artifacts/*/; do
+            if [ -f "${app_dir}bundle.zip" ]; then
+              echo "Decrypting inside $app_dir..."
+              (
+                cd "$app_dir"
+                # Unzip with password
+                unzip -P "$ZIP_PASS" bundle.zip
+                rm bundle.zip
+              )
+            fi
+          done
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -105,7 +144,6 @@ jobs:
 
       - name: Generate Source & Prepare
         run: |
-          # Write the python script to a file to avoid shell quoting issues
           cat << 'EOF' > gen_altstore.py
           import os
           import json
@@ -113,18 +151,15 @@ jobs:
           from datetime import datetime
           
           target_url = os.environ["TARGET_BASE_URL"]
+          dev_name = os.environ["DEVELOPER_NAME"]
           output_dir = "release_dist"
           os.makedirs(output_dir, exist_ok=True)
           
-          source_json = {
-              "name": "imjac0b Apps",
-              "identifier": "com.imjac0b.altstore",
-              "apps": []
-          }
+          # Load base JSON from env
+          source_json = json.loads(os.environ["SOURCE_JSON_BASE"])
           
           artifacts_root = "artifacts"
           
-          # Sort to ensure deterministic order if needed
           if os.path.exists(artifacts_root):
               folders = sorted(os.listdir(artifacts_root))
           else:
@@ -142,29 +177,37 @@ jobs:
               
               scheme = meta["scheme"]
               ipa_filename = f"{scheme}.ipa"
+              icon_filename = f"{scheme}.png"
+              
               ipa_src = os.path.join(folder_path, ipa_filename)
+              icon_src = os.path.join(folder_path, "icon.png")
               
               if os.path.exists(ipa_src):
                   shutil.copy2(ipa_src, os.path.join(output_dir, ipa_filename))
                   
-                  # Fix 1: Use .get() with safe defaults
+                  # Handle Icon
+                  final_icon_url = ""
+                  if os.path.exists(icon_src) and os.path.getsize(icon_src) > 0:
+                      shutil.copy2(icon_src, os.path.join(output_dir, icon_filename))
+                      final_icon_url = f"{target_url}/{icon_filename}"
+                  else:
+                      final_icon_url = f"{target_url}/default_icon.png"
+
                   commit_msg = meta.get("commitMsg", "Update")
                   commit_hash = meta.get("commitHash", "unknown")
                   date_str = datetime.now().strftime("%Y-%m-%d")
-                  
-                  # Fix 2: Use single quotes inside f-strings for dict keys
                   version_desc = f"{commit_msg} ({commit_hash})\nUpdated: {date_str}"
                   
                   app_entry = {
-                      "name": meta['name'], # Changed to single quotes
-                      "bundleIdentifier": meta['bundleIdentifier'], # Changed to single quotes
-                      "developerName": "imjac0b",
+                      "name": meta['name'],
+                      "bundleIdentifier": meta['bundleIdentifier'],
+                      "developerName": dev_name,
                       "version": meta['version'],
                       "versionDate": date_str,
                       "versionDescription": version_desc,
                       "downloadURL": f"{target_url}/{ipa_filename}",
-                      "localizedDescription": f"{meta['name']} by imjac0b", # Changed to single quotes
-                      "iconURL": f"{target_url}/icon.png",
+                      "localizedDescription": f"{meta['name']} by {dev_name}",
+                      "iconURL": final_icon_url,
                       "size": os.path.getsize(ipa_src)
                   }
                   source_json["apps"].append(app_entry)
@@ -174,7 +217,6 @@ jobs:
               json.dump(source_json, f, indent=2)
           EOF
           
-          # Execute the generated script
           python3 gen_altstore.py
 
       - name: Force Push to Target Repo
