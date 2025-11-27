@@ -105,12 +105,13 @@ jobs:
 
       - name: Generate Source & Prepare
         run: |
-          python3 -c '
+          # Write the python script to a file to avoid shell quoting issues
+          cat << 'EOF' > gen_altstore.py
           import os
           import json
           import shutil
           from datetime import datetime
-
+          
           target_url = os.environ["TARGET_BASE_URL"]
           output_dir = "release_dist"
           os.makedirs(output_dir, exist_ok=True)
@@ -123,7 +124,13 @@ jobs:
           
           artifacts_root = "artifacts"
           
-          for artifact_folder in os.listdir(artifacts_root):
+          # Sort to ensure deterministic order if needed
+          if os.path.exists(artifacts_root):
+              folders = sorted(os.listdir(artifacts_root))
+          else:
+              folders = []
+          
+          for artifact_folder in folders:
               folder_path = os.path.join(artifacts_root, artifact_folder)
               if not os.path.isdir(folder_path): continue
                   
@@ -140,30 +147,35 @@ jobs:
               if os.path.exists(ipa_src):
                   shutil.copy2(ipa_src, os.path.join(output_dir, ipa_filename))
                   
-                  # Format: "Feat: New UI (a1b2c3d) - 2025-11-27"
+                  # Fix 1: Use .get() with safe defaults
                   commit_msg = meta.get("commitMsg", "Update")
                   commit_hash = meta.get("commitHash", "unknown")
                   date_str = datetime.now().strftime("%Y-%m-%d")
                   
+                  # Fix 2: Use single quotes inside f-strings for dict keys
                   version_desc = f"{commit_msg} ({commit_hash})\nUpdated: {date_str}"
                   
                   app_entry = {
-                      "name": meta["name"],
-                      "bundleIdentifier": meta["bundleIdentifier"],
+                      "name": meta['name'], # Changed to single quotes
+                      "bundleIdentifier": meta['bundleIdentifier'], # Changed to single quotes
                       "developerName": "imjac0b",
-                      "version": meta["version"],
+                      "version": meta['version'],
                       "versionDate": date_str,
                       "versionDescription": version_desc,
                       "downloadURL": f"{target_url}/{ipa_filename}",
-                      "localizedDescription": f"{meta["name"]} by imjac0b",
+                      "localizedDescription": f"{meta['name']} by imjac0b", # Changed to single quotes
                       "iconURL": f"{target_url}/icon.png",
                       "size": os.path.getsize(ipa_src)
                   }
                   source_json["apps"].append(app_entry)
-
+                  print(f"Processed {meta['name']}")
+          
           with open(os.path.join(output_dir, "apps.json"), "w") as f:
               json.dump(source_json, f, indent=2)
-          '
+          EOF
+          
+          # Execute the generated script
+          python3 gen_altstore.py
 
       - name: Force Push to Target Repo
         env:
