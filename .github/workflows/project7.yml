@@ -2,6 +2,8 @@ name: Project 7
 
 on:
   workflow_dispatch:
+  push:
+    paths: ".github/workflows/project7.yml"
 
 env:
   TARGET_REPO: imjac0b/${{ secrets.PROJECT_7_REPO }}
