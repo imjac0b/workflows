@@ -29,7 +29,7 @@ jobs:
             scheme: "Jacob (iOS)"
             product_name: Jacob
             subdir: Jacob
-            setup: bun install && bun build:safari > /dev/null
+            setup: bun install --slient --frozen-lockfile && bun build:safari > /dev/null
 
     steps:
       - name: Checkout App Repository
@@ -86,6 +86,7 @@ jobs:
           
           COMMIT_HASH=$(git rev-parse --short HEAD)
           COMMIT_MSG=$(git log -1 --pretty=%s | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+          COMMIT_DATE=$(git log -1 --format=%cI) # Captures ISO 8601 date (e.g. 2025-11-28T12:47:00+08:00)
           
           find "$APP_BUNDLE_PATH" -name "AppIcon*.png" | sort -r | head -n 1 > icon_path.txt
           ICON_SRC=$(cat icon_path.txt)
@@ -106,7 +107,7 @@ jobs:
           }
           EOF
           
-          python3 -c "import json; f='dist/metadata.json'; d=json.load(open(f)); d.update({'commitHash': '$COMMIT_HASH', 'commitMsg': '$COMMIT_MSG'}); json.dump(d, open(f,'w'))"
+          python3 -c "import json; f='dist/metadata.json'; d=json.load(open(f)); d.update({'commitHash': '$COMMIT_HASH', 'commitMsg': '$COMMIT_MSG', 'commitDate': '$COMMIT_DATE'}); json.dump(d, open(f,'w'))"
 
       - name: Package IPA
         env:
@@ -225,10 +226,18 @@ jobs:
                   commit_msg = meta.get("commitMsg", "Update")
                   commit_hash = meta.get("commitHash", "unknown")
                   
-                  # Dates
-                  now = datetime.now(timezone.utc)
-                  date_str = now.strftime("%Y-%m-%d") # Standard date
-                  iso_date_str = now.strftime("%Y-%m-%dT%H:%M:%SZ") # ISO format for versions
+                  # Parse the commit date passed from the build job
+                  raw_date = meta.get("commitDate")
+                  
+                  if raw_date:
+                      # Python 3.11 supports ISO format parsing natively
+                      dt_obj = datetime.fromisoformat(raw_date)
+                  else:
+                      # Fallback if date missing
+                      dt_obj = datetime.now(timezone.utc)
+
+                  date_str = dt_obj.strftime("%Y-%m-%d") 
+                  iso_date_str = dt_obj.strftime("%Y-%m-%dT%H:%M:%SZ")
                   
                   version_desc = f"{commit_msg} ({commit_hash})\nUpdated: {date_str}"
                   file_size = os.path.getsize(ipa_src)
