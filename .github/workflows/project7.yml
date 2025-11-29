@@ -86,7 +86,7 @@ jobs:
           
           COMMIT_HASH=$(git rev-parse --short HEAD)
           COMMIT_MSG=$(git log -1 --pretty=%s | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
-          COMMIT_DATE=$(git log -1 --format=%cI) # Captures ISO 8601 date (e.g. 2025-11-28T12:47:00+08:00)
+          COMMIT_DATE=$(git log -1 --format=%cI)
           
           find "$APP_BUNDLE_PATH" -name "AppIcon*.png" | sort -r | head -n 1 > icon_path.txt
           ICON_SRC=$(cat icon_path.txt)
@@ -160,7 +160,6 @@ jobs:
               echo "Decrypting inside $app_dir..."
               (
                 cd "$app_dir"
-                # Unzip with password
                 unzip -P "$ZIP_PASS" bundle.zip
                 rm bundle.zip
               )
@@ -180,7 +179,7 @@ jobs:
           import os
           import json
           import shutil
-          from datetime import datetime, timezone
+          from datetime import datetime, timezone, timedelta
           
           root_url = os.environ["TARGET_BASE_URL_ROOT"]
           folder_pass = os.environ["FOLDER_PASS"]
@@ -195,6 +194,8 @@ jobs:
           
           artifacts_root = "artifacts"
           folders = sorted(os.listdir(artifacts_root)) if os.path.exists(artifacts_root) else []
+          
+          hk_tz = timezone(timedelta(hours=8))
           
           for artifact_folder in folders:
               folder_path = os.path.join(artifacts_root, artifact_folder)
@@ -226,23 +227,19 @@ jobs:
                   commit_msg = meta.get("commitMsg", "Update")
                   commit_hash = meta.get("commitHash", "unknown")
                   
-                  # Parse the commit date passed from the build job
                   raw_date = meta.get("commitDate")
                   
                   if raw_date:
-                      # Python 3.11 supports ISO format parsing natively
-                      dt_obj = datetime.fromisoformat(raw_date)
+                      dt_obj = datetime.fromisoformat(raw_date).astimezone(hk_tz)
                   else:
-                      # Fallback if date missing
-                      dt_obj = datetime.now(timezone.utc)
+                      dt_obj = datetime.now(hk_tz)
 
                   date_str = dt_obj.strftime("%Y-%m-%d") 
-                  iso_date_str = dt_obj.strftime("%Y-%m-%dT%H:%M:%SZ")
+                  iso_date_str = dt_obj.isoformat()
                   
                   version_desc = f"{commit_msg} ({commit_hash})\nUpdated: {date_str}"
                   file_size = os.path.getsize(ipa_src)
                   
-                  # Create the main entry including the versions array
                   app_entry = {
                       "name": meta['name'],
                       "bundleIdentifier": meta['bundleIdentifier'],
