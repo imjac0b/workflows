@@ -68,7 +68,7 @@ jobs:
             -archivePath "$ARCHIVE_PATH" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            -quiet
+            -quiet > /dev/null 2>&1
 
       - name: Extract Metadata & Icon
         id: metadata
