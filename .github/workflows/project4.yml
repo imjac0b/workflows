@@ -48,7 +48,7 @@ jobs:
 
     - name: Copy Folder to Second Repo
       run: |
-        cp -r main-repo/token.json result-repo/
+        cp -r main-repo/token.json main-repo/graphql-operations.json result-repo/
 
     - name: Commit and Push Changes
       run: |
