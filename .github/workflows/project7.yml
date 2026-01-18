@@ -31,6 +31,10 @@ jobs:
             subdir: Jacob
             setup: bun install --slient --frozen-lockfile && bun build:safari > /dev/null
 
+          - app: ETA
+            repo: imjac0b/ETA
+            scheme: ETA
+
     steps:
       - name: Checkout App Repository
         uses: actions/checkout@v4
