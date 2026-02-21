@@ -28,7 +28,7 @@ jobs:
           - app: Extension
             repo: imjac0b/chrome-extension
             scheme: "JacobExtension (iOS)"
-            product_name: Jacob
+            product_name: "JacobExtension"
             subdir: Jacob
             setup: bun install --silent --frozen-lockfile && bun build:safari > /dev/null
 
