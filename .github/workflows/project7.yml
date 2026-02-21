@@ -16,6 +16,7 @@ jobs:
   build:
     name: Build ${{ matrix.app }}
     runs-on: macos-26
+    continue-on-error: true  # ← Don't fail the whole matrix if one app fails
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +30,7 @@ jobs:
             scheme: "Jacob (iOS)"
             product_name: Jacob
             subdir: Jacob
-            setup: bun install --slient --frozen-lockfile && bun build:safari > /dev/null
+            setup: bun install --silent --frozen-lockfile && bun build:safari > /dev/null
 
           - app: ETA
             repo: imjac0b/ETA
@@ -87,11 +88,26 @@ jobs:
 
           APP_BUNDLE_PATH="./dist/build/App.xcarchive/Products/Applications/$PRODUCT.app"
           INFO_PLIST="$APP_BUNDLE_PATH/Info.plist"
-          
-          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST")
-          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$INFO_PLIST")
-          DISPLAY_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$INFO_PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Print :CFBundleName" "$INFO_PLIST")
-          
+
+          # ── Safe PlistBuddy helper ──────────────────────────────────────────
+          # Returns the value or an empty string if the key doesn't exist
+          plist_get() {
+            /usr/libexec/PlistBuddy -c "Print :$1" "$2" 2>/dev/null || true
+          }
+
+          VERSION=$(plist_get "CFBundleShortVersionString" "$INFO_PLIST")
+          # Fallback: CFBundleVersion is always present
+          [ -z "$VERSION" ] && VERSION=$(plist_get "CFBundleVersion" "$INFO_PLIST")
+          # Last resort
+          [ -z "$VERSION" ] && VERSION="0.0.0"
+
+          BUNDLE_ID=$(plist_get "CFBundleIdentifier" "$INFO_PLIST")
+          [ -z "$BUNDLE_ID" ] && { echo "ERROR: CFBundleIdentifier missing — cannot continue."; exit 1; }
+
+          DISPLAY_NAME=$(plist_get "CFBundleDisplayName" "$INFO_PLIST")
+          [ -z "$DISPLAY_NAME" ] && DISPLAY_NAME=$(plist_get "CFBundleName" "$INFO_PLIST")
+          [ -z "$DISPLAY_NAME" ] && DISPLAY_NAME="$SCHEME"
+
           COMMIT_HASH=$(git rev-parse --short HEAD)
           COMMIT_MSG=$(git log -1 --pretty=%s | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
           COMMIT_DATE=$(git log -1 --format=%cI)
@@ -100,7 +116,7 @@ jobs:
           ICON_SRC=$(cat icon_path.txt)
           
           if [ -z "$ICON_SRC" ]; then
-             echo "No raw icon found. using placeholder."
+             echo "No raw icon found, using placeholder."
              touch dist/icon.png
           else
              cp "$ICON_SRC" dist/icon.png
@@ -146,6 +162,8 @@ jobs:
   publish:
     name: Publish
     needs: build
+    # ↓ Run publish even if some build jobs failed
+    if: always() && !contains(needs.build.result, 'cancelled')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -271,6 +289,8 @@ jobs:
                   }
                   source_json["apps"].append(app_entry)
                   print(f"Processed {meta['name']}")
+              else:
+                  print(f"Skipping {scheme}: IPA not found")
           
           with open(os.path.join(output_dir, "apps.json"), "w") as f:
               json.dump(source_json, f, indent=2)
