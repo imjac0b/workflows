@@ -35,6 +35,10 @@ jobs:
             repo: imjac0b/ETA
             scheme: ETA
 
+          - app: Call
+            repo: imjac0b/call-ios
+            scheme: Call
+
     steps:
       - name: Checkout App Repository
         uses: actions/checkout@v4
