@@ -16,7 +16,10 @@ jobs:
   build:
     name: Build ${{ matrix.app }}
     runs-on: macos-26
-    continue-on-error: true  # ← Don't fail the whole matrix if one app fails
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -52,9 +55,20 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.PROJECT_7_TOKEN }}
 
+      - name: Get App Commit SHA
+        id: app_sha
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Cache DerivedData
+        uses: irgaly/xcode-cache@v1
+        with:
+          key: xcode-cache-${{ matrix.app }}-${{ steps.app_sha.outputs.sha }}
+          restore-keys: xcode-cache-${{ matrix.app }}-
+          delete-used-deriveddata-cache: true
+
       - name: Setup Bun
         if: contains(matrix.setup, 'bun')
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
@@ -65,12 +79,10 @@ jobs:
           mkdir -p "$WORK_DIR/dist"
           
           if [ ! -z "${{ matrix.setup }}" ]; then
-             echo "Running setup commands..."
              ${{ matrix.setup }}
           fi
 
           if [ ! -z "${{ matrix.subdir }}" ]; then
-             echo "Changing directory to ${{ matrix.subdir }}"
              cd "${{ matrix.subdir }}"
           fi
 
@@ -93,16 +105,12 @@ jobs:
           APP_BUNDLE_PATH="./dist/build/App.xcarchive/Products/Applications/$PRODUCT.app"
           INFO_PLIST="$APP_BUNDLE_PATH/Info.plist"
 
-          # ── Safe PlistBuddy helper ──────────────────────────────────────────
-          # Returns the value or an empty string if the key doesn't exist
           plist_get() {
             /usr/libexec/PlistBuddy -c "Print :$1" "$2" 2>/dev/null || true
           }
 
           VERSION=$(plist_get "CFBundleShortVersionString" "$INFO_PLIST")
-          # Fallback: CFBundleVersion is always present
           [ -z "$VERSION" ] && VERSION=$(plist_get "CFBundleVersion" "$INFO_PLIST")
-          # Last resort
           [ -z "$VERSION" ] && VERSION="0.0.0"
 
           BUNDLE_ID=$(plist_get "CFBundleIdentifier" "$INFO_PLIST")
@@ -120,7 +128,6 @@ jobs:
           ICON_SRC=$(cat icon_path.txt)
           
           if [ -z "$ICON_SRC" ]; then
-             echo "No raw icon found, using placeholder."
              touch dist/icon.png
           else
              cp "$ICON_SRC" dist/icon.png
@@ -166,7 +173,6 @@ jobs:
   publish:
     name: Publish
     needs: build
-    # ↓ Run publish even if some build jobs failed
     if: always() && !contains(needs.build.result, 'cancelled')
     runs-on: ubuntu-latest
     permissions:
@@ -187,7 +193,6 @@ jobs:
         run: |
           for app_dir in artifacts/*/; do
             if [ -f "${app_dir}bundle.zip" ]; then
-              echo "Decrypting inside $app_dir..."
               (
                 cd "$app_dir"
                 unzip -P "$ZIP_PASS" bundle.zip
@@ -247,7 +252,6 @@ jobs:
               if os.path.exists(ipa_src):
                   shutil.copy2(ipa_src, os.path.join(output_dir, ipa_filename))
                   
-                  final_icon_url = ""
                   if os.path.exists(icon_src) and os.path.getsize(icon_src) > 0:
                       shutil.copy2(icon_src, os.path.join(output_dir, icon_filename))
                       final_icon_url = f"{target_url}/{icon_filename}"
@@ -264,7 +268,7 @@ jobs:
                   else:
                       dt_obj = datetime.now(hk_tz)
 
-                  date_str = dt_obj.strftime("%Y-%m-%d") 
+                  date_str = dt_obj.strftime("%Y-%m-%d")
                   iso_date_str = dt_obj.isoformat()
                   
                   version_desc = f"{commit_msg} ({commit_hash})\nUpdated: {date_str}"
