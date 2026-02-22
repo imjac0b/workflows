@@ -68,7 +68,7 @@ jobs:
 
       - name: Setup Bun
         if: contains(matrix.setup, 'bun')
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v1
         with:
           bun-version: latest
 
@@ -77,14 +77,11 @@ jobs:
           WORK_DIR=$(pwd)
           ARCHIVE_PATH="$WORK_DIR/dist/build/App.xcarchive"
           mkdir -p "$WORK_DIR/dist"
-          
-          if [ ! -z "${{ matrix.setup }}" ]; then
-             ${{ matrix.setup }}
-          fi
 
-          if [ ! -z "${{ matrix.subdir }}" ]; then
-             cd "${{ matrix.subdir }}"
-          fi
+          SETUP="${{ matrix.setup }}"
+          [ -z "$SETUP" ] || eval "$SETUP"
+
+          [ -z "${{ matrix.subdir }}" ] || cd "${{ matrix.subdir }}"
 
           xcodebuild -scheme "${{ matrix.scheme }}" \
             -sdk iphoneos \
