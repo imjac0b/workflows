@@ -36,6 +36,10 @@ jobs:
             repo: imjac0b/ETA
             scheme: ETA
 
+          - app: FakeActivities
+            repo: imjac0b/FakeActivities
+            scheme: FakeActivities
+
           - app: Call
             repo: imjac0b/call-ios
             scheme: Call
