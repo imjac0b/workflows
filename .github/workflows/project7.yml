@@ -122,7 +122,7 @@ jobs:
           [ -z "$DISPLAY_NAME" ] && DISPLAY_NAME="$SCHEME"
 
           COMMIT_HASH=$(git rev-parse --short HEAD)
-          COMMIT_MSG=$(git log -1 --pretty=%s | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+          COMMIT_MSG=$(git log -1 --pretty=%s)
           COMMIT_DATE=$(git log -1 --format=%cI)
           
           find "$APP_BUNDLE_PATH" -name "AppIcon*.png" | sort -r | head -n 1 > icon_path.txt
@@ -143,7 +143,13 @@ jobs:
           }
           EOF
           
-          python3 -c "import json; f='dist/metadata.json'; d=json.load(open(f)); d.update({'commitHash': '$COMMIT_HASH', 'commitMsg': '$COMMIT_MSG', 'commitDate': '$COMMIT_DATE'}); json.dump(d, open(f,'w'))"
+          jq \
+            --arg hash "$COMMIT_HASH" \
+            --arg msg "$COMMIT_MSG" \
+            --arg date "$COMMIT_DATE" \
+            '. + {commitHash: $hash, commitMsg: $msg, commitDate: $date}' \
+            dist/metadata.json > dist/metadata.tmp.json \
+            && mv dist/metadata.tmp.json dist/metadata.json
 
       - name: Package IPA
         env:
