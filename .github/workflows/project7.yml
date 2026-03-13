@@ -47,6 +47,10 @@ jobs:
             repo: imjac0b/call-ios
             scheme: Call
 
+          - app: RichPresence
+            repo: imjac0b/RichPresenceApp
+            scheme: RichPresence
+
     steps:
       - name: Checkout App Repository
         uses: actions/checkout@v4
