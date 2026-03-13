@@ -63,7 +63,15 @@ jobs:
         id: app_sha
         run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
+      - name: Restore IPA Cache
+        id: ipa_cache
+        uses: actions/cache@v4
+        with:
+          path: dist/bundle.zip
+          key: ipa-${{ matrix.app }}-${{ steps.app_sha.outputs.sha }}
+
       - name: Cache DerivedData
+        if: steps.ipa_cache.outputs.cache-hit != 'true'
         uses: irgaly/xcode-cache@v1
         with:
           key: xcode-cache-${{ matrix.app }}-${{ steps.app_sha.outputs.sha }}
@@ -71,12 +79,13 @@ jobs:
           delete-used-deriveddata-cache: true
 
       - name: Setup Bun
-        if: contains(matrix.setup, 'bun')
+        if: steps.ipa_cache.outputs.cache-hit != 'true' && contains(matrix.setup, 'bun')
         uses: oven-sh/setup-bun@v1
         with:
           bun-version: latest
 
       - name: Build Archive (Unsigned)
+        if: steps.ipa_cache.outputs.cache-hit != 'true'
         run: |
           WORK_DIR=$(pwd)
           ARCHIVE_PATH="$WORK_DIR/dist/build/App.xcarchive"
@@ -98,6 +107,7 @@ jobs:
 
       - name: Extract Metadata & Icon
         id: metadata
+        if: steps.ipa_cache.outputs.cache-hit != 'true'
         run: |
           SCHEME="${{ matrix.scheme }}"
           PRODUCT="${{ matrix.product_name }}"
@@ -152,6 +162,7 @@ jobs:
             && mv dist/metadata.tmp.json dist/metadata.json
 
       - name: Package IPA
+        if: steps.ipa_cache.outputs.cache-hit != 'true'
         env:
           ZIP_PASS: ${{ secrets.PROJECT_7_TOKEN }}
         run: |
