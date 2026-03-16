@@ -28,10 +28,11 @@ jobs:
             repo: imjac0b/universe
             scheme: Universe
 
-          - app: Universe-tvOS
+          - app: UniverseTVOS
             repo: imjac0b/universe
-            scheme: 'Universe tvOS'
-          
+            scheme: "Universe tvOS"
+            sdk: appletvos
+
           - app: Extension
             repo: imjac0b/chrome-extension
             scheme: "JacobExtension (iOS)"
@@ -101,7 +102,7 @@ jobs:
           [ -z "${{ matrix.subdir }}" ] || cd "${{ matrix.subdir }}"
 
           xcodebuild -scheme "${{ matrix.scheme }}" \
-            -sdk iphoneos \
+            -sdk "${{ matrix.sdk || 'iphoneos' }}" \
             -configuration Release \
             archive \
             -archivePath "$ARCHIVE_PATH" \
@@ -138,14 +139,14 @@ jobs:
           COMMIT_HASH=$(git rev-parse --short HEAD)
           COMMIT_MSG=$(git log -1 --pretty=%s)
           COMMIT_DATE=$(git log -1 --format=%cI)
-          
+
           find "$APP_BUNDLE_PATH" -name "AppIcon*.png" | sort -r | head -n 1 > icon_path.txt
           ICON_SRC=$(cat icon_path.txt)
-          
+
           if [ -z "$ICON_SRC" ]; then
-             touch dist/icon.png
+            touch dist/icon.png
           else
-             cp "$ICON_SRC" dist/icon.png
+            cp "$ICON_SRC" dist/icon.png
           fi
 
           cat <<EOF > dist/metadata.json
@@ -156,7 +157,7 @@ jobs:
             "scheme": "$SCHEME"
           }
           EOF
-          
+
           jq \
             --arg hash "$COMMIT_HASH" \
             --arg msg "$COMMIT_MSG" \
@@ -176,13 +177,13 @@ jobs:
 
           cd dist
           mkdir -p Payload
-          
+
           cp -r "./build/App.xcarchive/Products/Applications/$PRODUCT.app" ./Payload/
-          
+
           zip -r "$SCHEME.ipa" ./Payload
-          
+
           zip -P "$ZIP_PASS" -r bundle.zip "$SCHEME.ipa" metadata.json icon.png
-          
+
           rm -rf Payload build "$SCHEME.ipa" metadata.json icon.png
 
       - name: Upload Encrypted Artifact
@@ -200,7 +201,7 @@ jobs:
     permissions:
       contents: write
       actions: write
-    
+
     steps:
       - name: Download Artifacts
         uses: actions/download-artifact@v4
@@ -237,43 +238,43 @@ jobs:
           import json
           import shutil
           from datetime import datetime, timezone, timedelta
-          
+
           root_url = os.environ["TARGET_BASE_URL_ROOT"]
           folder_pass = os.environ["FOLDER_PASS"]
           dev_name = os.environ["DEVELOPER_NAME"]
-          
+
           output_dir = os.path.join("release_dist", folder_pass)
           os.makedirs(output_dir, exist_ok=True)
-          
+
           target_url = f"{root_url}/{folder_pass}"
-          
+
           source_json = json.loads(os.environ["SOURCE_JSON_BASE"])
-          
+
           artifacts_root = "artifacts"
           folders = sorted(os.listdir(artifacts_root)) if os.path.exists(artifacts_root) else []
-          
+
           hk_tz = timezone(timedelta(hours=8))
-          
+
           for artifact_folder in folders:
               folder_path = os.path.join(artifacts_root, artifact_folder)
               if not os.path.isdir(folder_path): continue
-                  
+
               meta_file = os.path.join(folder_path, "metadata.json")
               if not os.path.exists(meta_file): continue
-                  
+
               with open(meta_file, "r") as f:
                   meta = json.load(f)
-              
+
               scheme = meta["scheme"]
               ipa_filename = f"{scheme}.ipa"
               icon_filename = f"{scheme}.png"
-              
+
               ipa_src = os.path.join(folder_path, ipa_filename)
               icon_src = os.path.join(folder_path, "icon.png")
-              
+
               if os.path.exists(ipa_src):
                   shutil.copy2(ipa_src, os.path.join(output_dir, ipa_filename))
-                  
+
                   if os.path.exists(icon_src) and os.path.getsize(icon_src) > 0:
                       shutil.copy2(icon_src, os.path.join(output_dir, icon_filename))
                       final_icon_url = f"{target_url}/{icon_filename}"
@@ -282,9 +283,9 @@ jobs:
 
                   commit_msg = meta.get("commitMsg", "Update")
                   commit_hash = meta.get("commitHash", "unknown")
-                  
+
                   raw_date = meta.get("commitDate")
-                  
+
                   if raw_date:
                       dt_obj = datetime.fromisoformat(raw_date).astimezone(hk_tz)
                   else:
@@ -292,10 +293,10 @@ jobs:
 
                   date_str = dt_obj.strftime("%Y-%m-%d")
                   iso_date_str = dt_obj.isoformat()
-                  
+
                   version_desc = f"{commit_msg} ({commit_hash})\nUpdated: {date_str}"
                   file_size = os.path.getsize(ipa_src)
-                  
+
                   app_entry = {
                       "name": meta['name'],
                       "bundleIdentifier": meta['bundleIdentifier'],
@@ -321,11 +322,11 @@ jobs:
                   print(f"Processed {meta['name']}")
               else:
                   print(f"Skipping {scheme}: IPA not found")
-          
+
           with open(os.path.join(output_dir, "apps.json"), "w") as f:
               json.dump(source_json, f, indent=2)
           EOF
-          
+
           python3 gen_altstore.py
 
       - name: Force Push to Target Repo
@@ -336,11 +337,11 @@ jobs:
           git init
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
+
           git checkout -b main
           git add .
           git commit -m "Deploy Apps: $(date)"
-          
+
           git remote add origin https://x-access-token:$API_TOKEN_GITHUB@github.com/$TARGET_REPO.git
           git push -u --force origin main
 
