@@ -27,6 +27,10 @@ jobs:
           - app: Universe
             repo: imjac0b/universe
             scheme: Universe
+
+          - app: Universe-tvOS
+            repo: imjac0b/universe
+            scheme: 'Universe tvOS'
           
           - app: Extension
             repo: imjac0b/chrome-extension
