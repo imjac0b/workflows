@@ -3,8 +3,7 @@ name: Project 7
 on:
   workflow_dispatch:
   push:
-    paths:
-      - ".github/workflows/project7.yml"
+    paths: ".github/workflows/project7.yml"
 
 env:
   TARGET_REPO: imjac0b/${{ secrets.PROJECT_7_REPO }}
@@ -12,11 +11,10 @@ env:
   ARTIFACT_PATTERN: app-*
   DEVELOPER_NAME: ${{ secrets.PROJECT_7_DEVELOPER_NAME }}
   SOURCE_JSON_BASE: ${{ secrets.PROJECT_7_SOURCE_JSON_BASE }}
-  IOS_EXPORT_METHOD: development
 
 jobs:
   build:
-    name: Build ${{ matrix.app }} (${{ matrix.variant }})
+    name: Build ${{ matrix.app }}
     runs-on: macos-26
     continue-on-error: true
     permissions:
@@ -27,139 +25,31 @@ jobs:
       matrix:
         include:
           - app: Universe
-            variant: universal
             repo: imjac0b/universe
             scheme: Universe
-            device_family: "1,2"
-            signing_kind: none
-
-          - app: Universe
-            variant: iphone
-            repo: imjac0b/universe
-            scheme: Universe
-            device_family: "1"
-            signing_kind: iphone
-
-          - app: Universe
-            variant: ipad
-            repo: imjac0b/universe
-            scheme: Universe
-            device_family: "2"
-            signing_kind: ipad
-
+          
           - app: Extension
-            variant: universal
             repo: imjac0b/chrome-extension
             scheme: "JacobExtension (iOS)"
             product_name: "JacobExtension"
             subdir: Jacob
             setup: bun install --silent --frozen-lockfile && bun build:safari > /dev/null
-            device_family: "1,2"
-            signing_kind: none
-
-          - app: Extension
-            variant: iphone
-            repo: imjac0b/chrome-extension
-            scheme: "JacobExtension (iOS)"
-            product_name: "JacobExtension"
-            subdir: Jacob
-            setup: bun install --silent --frozen-lockfile && bun build:safari > /dev/null
-            device_family: "1"
-            signing_kind: iphone
-
-          - app: Extension
-            variant: ipad
-            repo: imjac0b/chrome-extension
-            scheme: "JacobExtension (iOS)"
-            product_name: "JacobExtension"
-            subdir: Jacob
-            setup: bun install --silent --frozen-lockfile && bun build:safari > /dev/null
-            device_family: "2"
-            signing_kind: ipad
 
           - app: ETA
-            variant: universal
             repo: imjac0b/ETA
             scheme: ETA
-            device_family: "1,2"
-            signing_kind: none
-
-          - app: ETA
-            variant: iphone
-            repo: imjac0b/ETA
-            scheme: ETA
-            device_family: "1"
-            signing_kind: iphone
-
-          - app: ETA
-            variant: ipad
-            repo: imjac0b/ETA
-            scheme: ETA
-            device_family: "2"
-            signing_kind: ipad
 
           - app: FakeActivities
-            variant: universal
             repo: imjac0b/FakeActivities
             scheme: FakeActivities
-            device_family: "1,2"
-            signing_kind: none
-
-          - app: FakeActivities
-            variant: iphone
-            repo: imjac0b/FakeActivities
-            scheme: FakeActivities
-            device_family: "1"
-            signing_kind: iphone
-
-          - app: FakeActivities
-            variant: ipad
-            repo: imjac0b/FakeActivities
-            scheme: FakeActivities
-            device_family: "2"
-            signing_kind: ipad
 
           - app: Call
-            variant: universal
             repo: imjac0b/call-ios
             scheme: Call
-            device_family: "1,2"
-            signing_kind: none
-
-          - app: Call
-            variant: iphone
-            repo: imjac0b/call-ios
-            scheme: Call
-            device_family: "1"
-            signing_kind: iphone
-
-          - app: Call
-            variant: ipad
-            repo: imjac0b/call-ios
-            scheme: Call
-            device_family: "2"
-            signing_kind: ipad
 
           - app: Presence
-            variant: universal
             repo: imjac0b/PresenceApp
             scheme: Presence
-            device_family: "1,2"
-            signing_kind: none
-
-          - app: Presence
-            variant: iphone
-            repo: imjac0b/PresenceApp
-            scheme: Presence
-            device_family: "1"
-            signing_kind: iphone
-
-          - app: Presence
-            variant: ipad
-            repo: imjac0b/PresenceApp
-            scheme: Presence
-            device_family: "2"
-            signing_kind: ipad
 
     steps:
       - name: Checkout App Repository
@@ -171,23 +61,21 @@ jobs:
 
       - name: Get App Commit SHA
         id: app_sha
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Restore IPA Cache
         id: ipa_cache
         uses: actions/cache@v4
         with:
           path: dist/bundle.zip
-          key: ipa-${{ matrix.app }}-${{ matrix.variant }}-${{ steps.app_sha.outputs.sha }}
+          key: ipa-${{ matrix.app }}-${{ steps.app_sha.outputs.sha }}
 
       - name: Cache DerivedData
         if: steps.ipa_cache.outputs.cache-hit != 'true'
         uses: irgaly/xcode-cache@v1
         with:
-          key: xcode-cache-${{ matrix.app }}-${{ matrix.variant }}-${{ steps.app_sha.outputs.sha }}
-          restore-keys: |
-            xcode-cache-${{ matrix.app }}-${{ matrix.variant }}-
-            xcode-cache-${{ matrix.app }}-
+          key: xcode-cache-${{ matrix.app }}-${{ steps.app_sha.outputs.sha }}
+          restore-keys: xcode-cache-${{ matrix.app }}-
           delete-used-deriveddata-cache: true
 
       - name: Setup Bun
@@ -196,73 +84,11 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Import Signing Assets
-        if: steps.ipa_cache.outputs.cache-hit != 'true' && matrix.signing_kind != 'none'
-        env:
-          IPHONE_P12_B64: ${{ secrets.PROJECT_7_IPHONE_P12_B64 }}
-          IPHONE_P12_PASSWORD: ${{ secrets.PROJECT_7_IPHONE_P12_PASSWORD }}
-          IPHONE_PROFILE_B64: ${{ secrets.PROJECT_7_IPHONE_PROFILE_B64 }}
-          IPAD_P12_B64: ${{ secrets.PROJECT_7_IPAD_P12_B64 }}
-          IPAD_P12_PASSWORD: ${{ secrets.PROJECT_7_IPAD_P12_PASSWORD }}
-          IPAD_PROFILE_B64: ${{ secrets.PROJECT_7_IPAD_PROFILE_B64 }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
-          KEYCHAIN_PATH="$RUNNER_TEMP/${{ matrix.app }}-${{ matrix.variant }}.keychain-db"
-
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security default-keychain -s "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-
-          if [ "${{ matrix.signing_kind }}" = "iphone" ]; then
-            printf '%s' "$IPHONE_P12_B64" | base64 -D > signing.p12
-            printf '%s' "$IPHONE_PROFILE_B64" | base64 -D > signing.mobileprovision
-            P12_PASS="$IPHONE_P12_PASSWORD"
-          else
-            printf '%s' "$IPAD_P12_B64" | base64 -D > signing.p12
-            printf '%s' "$IPAD_PROFILE_B64" | base64 -D > signing.mobileprovision
-            P12_PASS="$IPAD_P12_PASSWORD"
-          fi
-
-          security import signing.p12 \
-            -k "$KEYCHAIN_PATH" \
-            -P "$P12_PASS" \
-            -T /usr/bin/codesign \
-            -T /usr/bin/security
-
-          security set-key-partition-list \
-            -S apple-tool:,apple: \
-            -s \
-            -k "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN_PATH"
-
-          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-
-          PROFILE_PLIST="$RUNNER_TEMP/profile-${{ matrix.app }}-${{ matrix.variant }}.plist"
-          security cms -D -i signing.mobileprovision > "$PROFILE_PLIST"
-
-          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$PROFILE_PLIST")
-          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$PROFILE_PLIST")
-          TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print :TeamIdentifier:0" "$PROFILE_PLIST")
-
-          cp signing.mobileprovision "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
-
-          echo "PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
-          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
-          echo "TEAM_ID=$TEAM_ID" >> "$GITHUB_ENV"
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-
-      - name: Build Archive
+      - name: Build Archive (Unsigned)
         if: steps.ipa_cache.outputs.cache-hit != 'true'
-        shell: bash
         run: |
-          set -euo pipefail
-
           WORK_DIR=$(pwd)
-          ARCHIVE_PATH="$WORK_DIR/dist/build/${{ matrix.app }}-${{ matrix.variant }}.xcarchive"
+          ARCHIVE_PATH="$WORK_DIR/dist/build/App.xcarchive"
           mkdir -p "$WORK_DIR/dist"
 
           SETUP="${{ matrix.setup }}"
@@ -270,44 +96,24 @@ jobs:
 
           [ -z "${{ matrix.subdir }}" ] || cd "${{ matrix.subdir }}"
 
-          if [ "${{ matrix.signing_kind }}" = "none" ]; then
-            xcodebuild \
-              -scheme "${{ matrix.scheme }}" \
-              -sdk iphoneos \
-              -configuration Release \
-              -archivePath "$ARCHIVE_PATH" \
-              TARGETED_DEVICE_FAMILY="${{ matrix.device_family }}" \
-              CODE_SIGN_IDENTITY="" \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGNING_ALLOWED=NO \
-              archive \
-              -quiet
-          else
-            xcodebuild \
-              -scheme "${{ matrix.scheme }}" \
-              -sdk iphoneos \
-              -configuration Release \
-              -archivePath "$ARCHIVE_PATH" \
-              TARGETED_DEVICE_FAMILY="${{ matrix.device_family }}" \
-              CODE_SIGN_STYLE=Manual \
-              DEVELOPMENT_TEAM="$TEAM_ID" \
-              PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
-              OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
-              archive \
-              -quiet
-          fi
+          xcodebuild -scheme "${{ matrix.scheme }}" \
+            -sdk iphoneos \
+            -configuration Release \
+            archive \
+            -archivePath "$ARCHIVE_PATH" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            -quiet > /dev/null 2>&1
 
       - name: Extract Metadata & Icon
+        id: metadata
         if: steps.ipa_cache.outputs.cache-hit != 'true'
-        shell: bash
         run: |
-          set -euo pipefail
-
           SCHEME="${{ matrix.scheme }}"
           PRODUCT="${{ matrix.product_name }}"
           [ -z "$PRODUCT" ] && PRODUCT="$SCHEME"
 
-          APP_BUNDLE_PATH="./dist/build/${{ matrix.app }}-${{ matrix.variant }}.xcarchive/Products/Applications/$PRODUCT.app"
+          APP_BUNDLE_PATH="./dist/build/App.xcarchive/Products/Applications/$PRODUCT.app"
           INFO_PLIST="$APP_BUNDLE_PATH/Info.plist"
 
           plist_get() {
@@ -319,121 +125,66 @@ jobs:
           [ -z "$VERSION" ] && VERSION="0.0.0"
 
           BUNDLE_ID=$(plist_get "CFBundleIdentifier" "$INFO_PLIST")
-          [ -z "$BUNDLE_ID" ] && { echo "ERROR: CFBundleIdentifier missing"; exit 1; }
+          [ -z "$BUNDLE_ID" ] && { echo "ERROR: CFBundleIdentifier missing — cannot continue."; exit 1; }
 
           DISPLAY_NAME=$(plist_get "CFBundleDisplayName" "$INFO_PLIST")
           [ -z "$DISPLAY_NAME" ] && DISPLAY_NAME=$(plist_get "CFBundleName" "$INFO_PLIST")
           [ -z "$DISPLAY_NAME" ] && DISPLAY_NAME="$SCHEME"
 
-          case "${{ matrix.variant }}" in
-            iphone) DISPLAY_NAME="$DISPLAY_NAME (iPhone)" ;;
-            ipad) DISPLAY_NAME="$DISPLAY_NAME (iPad)" ;;
-          esac
-
           COMMIT_HASH=$(git rev-parse --short HEAD)
           COMMIT_MSG=$(git log -1 --pretty=%s)
           COMMIT_DATE=$(git log -1 --format=%cI)
-
-          ICON_SRC=$(find "$APP_BUNDLE_PATH" -name "AppIcon*.png" | sort -r | head -n 1 || true)
-
+          
+          find "$APP_BUNDLE_PATH" -name "AppIcon*.png" | sort -r | head -n 1 > icon_path.txt
+          ICON_SRC=$(cat icon_path.txt)
+          
           if [ -z "$ICON_SRC" ]; then
-            : > dist/icon.png
+             touch dist/icon.png
           else
-            cp "$ICON_SRC" dist/icon.png
+             cp "$ICON_SRC" dist/icon.png
           fi
 
-          jq -n \
-            --arg name "$DISPLAY_NAME" \
-            --arg bundleIdentifier "$BUNDLE_ID" \
-            --arg version "$VERSION" \
-            --arg scheme "$SCHEME" \
-            --arg app "${{ matrix.app }}" \
-            --arg variant "${{ matrix.variant }}" \
+          cat <<EOF > dist/metadata.json
+          {
+            "name": "$DISPLAY_NAME",
+            "bundleIdentifier": "$BUNDLE_ID",
+            "version": "$VERSION",
+            "scheme": "$SCHEME"
+          }
+          EOF
+          
+          jq \
             --arg hash "$COMMIT_HASH" \
             --arg msg "$COMMIT_MSG" \
             --arg date "$COMMIT_DATE" \
-            '{
-              name: $name,
-              bundleIdentifier: $bundleIdentifier,
-              version: $version,
-              scheme: $scheme,
-              artifactName: $app,
-              variant: $variant,
-              commitHash: $hash,
-              commitMsg: $msg,
-              commitDate: $date
-            }' > dist/metadata.json
-
-      - name: Export Signed IPA
-        if: steps.ipa_cache.outputs.cache-hit != 'true' && matrix.signing_kind != 'none'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          BUNDLE_ID=$(jq -r '.bundleIdentifier' dist/metadata.json)
-          ARCHIVE_PATH="$PWD/dist/build/${{ matrix.app }}-${{ matrix.variant }}.xcarchive"
-          EXPORT_PATH="$PWD/dist/export-${{ matrix.variant }}"
-
-          cat > ExportOptions.plist <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>${IOS_EXPORT_METHOD}</string>
-            <key>signingStyle</key>
-            <string>manual</string>
-            <key>teamID</key>
-            <string>${TEAM_ID}</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>${BUNDLE_ID}</key>
-              <string>${PROFILE_NAME}</string>
-            </dict>
-          </dict>
-          </plist>
-          EOF
-
-          xcodebuild \
-            -exportArchive \
-            -archivePath "$ARCHIVE_PATH" \
-            -exportPath "$EXPORT_PATH" \
-            -exportOptionsPlist ExportOptions.plist \
-            -quiet
-
-          IPA_SRC=$(find "$EXPORT_PATH" -maxdepth 1 -name "*.ipa" | head -n 1)
-          [ -n "$IPA_SRC" ] || { echo "ERROR: exported IPA not found"; exit 1; }
-
-          cp "$IPA_SRC" "$PWD/dist/${{ matrix.app }}-${{ matrix.variant }}.ipa"
+            '. + {commitHash: $hash, commitMsg: $msg, commitDate: $date}' \
+            dist/metadata.json > dist/metadata.tmp.json \
+            && mv dist/metadata.tmp.json dist/metadata.json
 
       - name: Package IPA
         if: steps.ipa_cache.outputs.cache-hit != 'true'
         env:
           ZIP_PASS: ${{ secrets.PROJECT_7_TOKEN }}
-        shell: bash
         run: |
-          set -euo pipefail
-
+          SCHEME="${{ matrix.scheme }}"
           PRODUCT="${{ matrix.product_name }}"
-          [ -z "$PRODUCT" ] && PRODUCT="${{ matrix.scheme }}"
-          FINAL_IPA="${{ matrix.app }}-${{ matrix.variant }}.ipa"
-
-          if [ "${{ matrix.signing_kind }}" = "none" ]; then
-            cd dist
-            mkdir -p Payload
-            cp -r "./build/${{ matrix.app }}-${{ matrix.variant }}.xcarchive/Products/Applications/$PRODUCT.app" ./Payload/
-            zip -qry "$FINAL_IPA" ./Payload
-            rm -rf Payload
-          fi
+          [ -z "$PRODUCT" ] && PRODUCT="$SCHEME"
 
           cd dist
-          zip -P "$ZIP_PASS" -qry bundle.zip "$FINAL_IPA" metadata.json icon.png
-          rm -rf build export-* "$FINAL_IPA" metadata.json icon.png
+          mkdir -p Payload
+          
+          cp -r "./build/App.xcarchive/Products/Applications/$PRODUCT.app" ./Payload/
+          
+          zip -r "$SCHEME.ipa" ./Payload
+          
+          zip -P "$ZIP_PASS" -r bundle.zip "$SCHEME.ipa" metadata.json icon.png
+          
+          rm -rf Payload build "$SCHEME.ipa" metadata.json icon.png
 
       - name: Upload Encrypted Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-${{ matrix.app }}-${{ matrix.variant }}
+          name: app-${{ matrix.scheme }}
           path: dist/bundle.zip
           retention-days: 1
 
@@ -445,7 +196,7 @@ jobs:
     permissions:
       contents: write
       actions: write
-
+    
     steps:
       - name: Download Artifacts
         uses: actions/download-artifact@v4
@@ -457,15 +208,12 @@ jobs:
       - name: Decrypt Artifacts
         env:
           ZIP_PASS: ${{ secrets.PROJECT_7_TOKEN }}
-        shell: bash
         run: |
-          set -euo pipefail
-          shopt -s nullglob
           for app_dir in artifacts/*/; do
             if [ -f "${app_dir}bundle.zip" ]; then
               (
                 cd "$app_dir"
-                unzip -P "$ZIP_PASS" -o bundle.zip > /dev/null
+                unzip -P "$ZIP_PASS" bundle.zip
                 rm bundle.zip
               )
             fi
@@ -474,138 +222,122 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
       - name: Generate Source & Prepare
         env:
           FOLDER_PASS: ${{ secrets.PROJECT_7_PASSWORD }}
-        shell: bash
         run: |
-          set -euo pipefail
-
           cat << 'EOF' > gen_altstore.py
           import os
           import json
           import shutil
           from datetime import datetime, timezone, timedelta
-
+          
           root_url = os.environ["TARGET_BASE_URL_ROOT"]
           folder_pass = os.environ["FOLDER_PASS"]
           dev_name = os.environ["DEVELOPER_NAME"]
-
+          
           output_dir = os.path.join("release_dist", folder_pass)
           os.makedirs(output_dir, exist_ok=True)
-
+          
           target_url = f"{root_url}/{folder_pass}"
+          
           source_json = json.loads(os.environ["SOURCE_JSON_BASE"])
-
+          
           artifacts_root = "artifacts"
           folders = sorted(os.listdir(artifacts_root)) if os.path.exists(artifacts_root) else []
-
+          
           hk_tz = timezone(timedelta(hours=8))
-
-          default_icon_src = None
+          
           for artifact_folder in folders:
               folder_path = os.path.join(artifacts_root, artifact_folder)
-              icon_path = os.path.join(folder_path, "icon.png")
-              if os.path.exists(icon_path) and os.path.getsize(icon_path) > 0:
-                  default_icon_src = icon_path
-                  break
-
-          if default_icon_src:
-              shutil.copy2(default_icon_src, os.path.join(output_dir, "default_icon.png"))
-
-          for artifact_folder in folders:
-              folder_path = os.path.join(artifacts_root, artifact_folder)
-              if not os.path.isdir(folder_path):
-                  continue
-
+              if not os.path.isdir(folder_path): continue
+                  
               meta_file = os.path.join(folder_path, "metadata.json")
-              if not os.path.exists(meta_file):
-                  continue
-
-              with open(meta_file, "r", encoding="utf-8") as f:
+              if not os.path.exists(meta_file): continue
+                  
+              with open(meta_file, "r") as f:
                   meta = json.load(f)
-
-              artifact_name = meta["artifactName"]
-              variant = meta["variant"]
-              ipa_filename = f"{artifact_name}-{variant}.ipa"
-              icon_filename = f"{artifact_name}-{variant}.png"
-
+              
+              scheme = meta["scheme"]
+              ipa_filename = f"{scheme}.ipa"
+              icon_filename = f"{scheme}.png"
+              
               ipa_src = os.path.join(folder_path, ipa_filename)
               icon_src = os.path.join(folder_path, "icon.png")
+              
+              if os.path.exists(ipa_src):
+                  shutil.copy2(ipa_src, os.path.join(output_dir, ipa_filename))
+                  
+                  if os.path.exists(icon_src) and os.path.getsize(icon_src) > 0:
+                      shutil.copy2(icon_src, os.path.join(output_dir, icon_filename))
+                      final_icon_url = f"{target_url}/{icon_filename}"
+                  else:
+                      final_icon_url = f"{target_url}/default_icon.png"
 
-              if not os.path.exists(ipa_src):
-                  continue
+                  commit_msg = meta.get("commitMsg", "Update")
+                  commit_hash = meta.get("commitHash", "unknown")
+                  
+                  raw_date = meta.get("commitDate")
+                  
+                  if raw_date:
+                      dt_obj = datetime.fromisoformat(raw_date).astimezone(hk_tz)
+                  else:
+                      dt_obj = datetime.now(hk_tz)
 
-              shutil.copy2(ipa_src, os.path.join(output_dir, ipa_filename))
-
-              if os.path.exists(icon_src) and os.path.getsize(icon_src) > 0:
-                  shutil.copy2(icon_src, os.path.join(output_dir, icon_filename))
-                  final_icon_url = f"{target_url}/{icon_filename}"
+                  date_str = dt_obj.strftime("%Y-%m-%d")
+                  iso_date_str = dt_obj.isoformat()
+                  
+                  version_desc = f"{commit_msg} ({commit_hash})\nUpdated: {date_str}"
+                  file_size = os.path.getsize(ipa_src)
+                  
+                  app_entry = {
+                      "name": meta['name'],
+                      "bundleIdentifier": meta['bundleIdentifier'],
+                      "developerName": dev_name,
+                      "version": meta['version'],
+                      "versionDate": date_str,
+                      "versionDescription": version_desc,
+                      "downloadURL": f"{target_url}/{ipa_filename}",
+                      "localizedDescription": f"{meta['name']} by {dev_name}",
+                      "iconURL": final_icon_url,
+                      "size": file_size,
+                      "versions": [
+                          {
+                              "version": meta['version'],
+                              "date": iso_date_str,
+                              "localizedDescription": version_desc,
+                              "downloadURL": f"{target_url}/{ipa_filename}",
+                              "size": file_size
+                          }
+                      ]
+                  }
+                  source_json["apps"].append(app_entry)
+                  print(f"Processed {meta['name']}")
               else:
-                  final_icon_url = f"{target_url}/default_icon.png"
-
-              commit_msg = meta.get("commitMsg", "Update")
-              commit_hash = meta.get("commitHash", "unknown")
-              raw_date = meta.get("commitDate")
-
-              if raw_date:
-                  dt_obj = datetime.fromisoformat(raw_date).astimezone(hk_tz)
-              else:
-                  dt_obj = datetime.now(hk_tz)
-
-              date_str = dt_obj.strftime("%Y-%m-%d")
-              iso_date_str = dt_obj.isoformat()
-              file_size = os.path.getsize(ipa_src)
-
-              variant_label = variant.capitalize()
-              version_desc = f"{commit_msg} ({commit_hash})\\nUpdated: {date_str}\\nVariant: {variant_label}"
-
-              app_entry = {
-                  "name": meta["name"],
-                  "bundleIdentifier": meta["bundleIdentifier"],
-                  "developerName": dev_name,
-                  "version": meta["version"],
-                  "versionDate": date_str,
-                  "versionDescription": version_desc,
-                  "downloadURL": f"{target_url}/{ipa_filename}",
-                  "localizedDescription": f"{meta['name']} by {dev_name}",
-                  "iconURL": final_icon_url,
-                  "size": file_size,
-                  "versions": [
-                      {
-                          "version": meta["version"],
-                          "date": iso_date_str,
-                          "localizedDescription": version_desc,
-                          "downloadURL": f"{target_url}/{ipa_filename}",
-                          "size": file_size
-                      }
-                  ]
-              }
-
-              source_json["apps"].append(app_entry)
-
-          with open(os.path.join(output_dir, "apps.json"), "w", encoding="utf-8") as f:
+                  print(f"Skipping {scheme}: IPA not found")
+          
+          with open(os.path.join(output_dir, "apps.json"), "w") as f:
               json.dump(source_json, f, indent=2)
           EOF
-
+          
           python3 gen_altstore.py
 
       - name: Force Push to Target Repo
         env:
           API_TOKEN_GITHUB: ${{ secrets.PROJECT_7_TOKEN }}
-        shell: bash
         run: |
-          set -euo pipefail
           cd release_dist
           git init
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
           git checkout -b main
           git add .
-          git commit -m "Deploy Apps: $(date -u +'%Y-%m-%dT%H:%M:%SZ')" || true
-          git remote add origin "https://x-access-token:${API_TOKEN_GITHUB}@github.com/${TARGET_REPO}.git"
+          git commit -m "Deploy Apps: $(date)"
+          
+          git remote add origin https://x-access-token:$API_TOKEN_GITHUB@github.com/$TARGET_REPO.git
           git push -u --force origin main
 
       - name: Cleanup Artifacts
