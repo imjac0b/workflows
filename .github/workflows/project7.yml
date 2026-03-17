@@ -30,7 +30,7 @@ jobs:
 
           - app: UniverseTVOS
             repo: imjac0b/universe
-            scheme: "Universe tvOS"
+            scheme: "Universe (tvOS)"
             sdk: appletvos
 
           - app: Extension
