@@ -56,6 +56,13 @@ jobs:
             repo: imjac0b/PresenceApp
             scheme: Presence
 
+          - app: UberRideInfo
+            repo: imjac0b/uber-ride-info
+            scheme: "Uber Ride Info (iOS)"
+            product_name: "Uber Ride Info"
+            subdir: "Uber Ride Info"
+            setup: bun install --silent --frozen-lockfile && bun build:safari > /dev/null
+
     steps:
       - name: Checkout App Repository
         uses: actions/checkout@v4
