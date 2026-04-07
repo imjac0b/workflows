@@ -63,6 +63,10 @@ jobs:
             subdir: "Uber Ride Info"
             setup: bun install --silent --frozen-lockfile && bun build:safari > /dev/null
 
+          - app: Powerbanks
+            repo: imjac0b/powerbanks
+            scheme: Powerbanks
+
     steps:
       - name: Checkout App Repository
         uses: actions/checkout@v4
