@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "*/30 * * * *"
+  push:
+    paths: ".github/workflows/resolve-881903.yml"
 
 jobs:
   resolve:
@@ -22,9 +24,6 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
       - name: Resolve live stream
         run: bun run scripts/resolve-881903.ts ${{ matrix.station }} > live-${{ matrix.station }}.json
 
@@ -40,10 +39,7 @@ jobs:
 
       - name: Commit and push changes
         run: |
-          # Copy the generated JSON file into the target repository folder
           cp live-${{ matrix.station }}.json target-repo/
-          
-          # Navigate into the target repository
           cd target-repo
           
           git config --global user.name "github-actions[bot]"
@@ -57,7 +53,5 @@ jobs:
           fi
           
           git commit -m "chore(stream): auto-update live stream URL for ${{ matrix.station }}"
-          
-          # Pull with rebase to prevent conflicts from concurrent matrix jobs
           git pull --rebase
           git push
