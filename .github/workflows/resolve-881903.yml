@@ -4,8 +4,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "*/30 * * * *"
-  push:
-    paths: ".github/workflows/resolve-881903.yml"
 
 jobs:
   resolve:
@@ -17,15 +15,15 @@ jobs:
         station: ["881", "903", "864"]
 
     steps:
-      - name: Checkout repository
+      - name: Checkout current repository
         uses: actions/checkout@v4
-        with:
-          repository: "${{ secrets.RESOLVE_881903_REPO }}"
-          token: ${{ secrets.RESOLVE_881903_TOKEN }}
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
 
       - name: Resolve live stream
         run: bun run scripts/resolve-881903.ts ${{ matrix.station }} > live-${{ matrix.station }}.json
@@ -33,8 +31,21 @@ jobs:
       - name: Validate HLS access
         run: bun run scripts/validate-hls.ts live-${{ matrix.station }}.json
 
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: "${{ secrets.RESOLVE_881903_REPO }}"
+          token: ${{ secrets.RESOLVE_881903_TOKEN }}
+          path: "target-repo"
+
       - name: Commit and push changes
         run: |
+          # Copy the generated JSON file into the target repository folder
+          cp live-${{ matrix.station }}.json target-repo/
+          
+          # Navigate into the target repository
+          cd target-repo
+          
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
@@ -47,5 +58,6 @@ jobs:
           
           git commit -m "chore(stream): auto-update live stream URL for ${{ matrix.station }}"
           
+          # Pull with rebase to prevent conflicts from concurrent matrix jobs
           git pull --rebase
           git push
