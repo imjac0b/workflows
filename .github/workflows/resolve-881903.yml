@@ -1,0 +1,51 @@
+name: Resolve 881903 Live Streams
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+  push:
+    paths: ".github/workflows/resolve-881903.yml"
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        station: ["881", "903", "864"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: "${{ secrets.RESOLVE_881903_REPO }}"
+          token: ${{ secrets.RESOLVE_881903_TOKEN }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Resolve live stream
+        run: bun run scripts/resolve-881903.ts ${{ matrix.station }} > live-${{ matrix.station }}.json
+
+      - name: Validate HLS access
+        run: bun run scripts/validate-hls.ts live-${{ matrix.station }}.json
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          git add live-${{ matrix.station }}.json
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit for station ${{ matrix.station }}."
+            exit 0
+          fi
+          
+          git commit -m "chore(stream): auto-update live stream URL for ${{ matrix.station }}"
+          
+          git pull --rebase
+          git push
