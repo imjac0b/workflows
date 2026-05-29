@@ -1,8 +1,8 @@
 name: Resolve 881903 Live Streams
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/30 * * * *"
+  #schedule:
+  #  - cron: "*/30 * * * *"
   push:
     paths: ".github/workflows/resolve-881903.yml"
 jobs:
