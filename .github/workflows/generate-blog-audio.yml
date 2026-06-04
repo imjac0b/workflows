@@ -16,6 +16,7 @@ jobs:
     timeout-minutes: 360
 
     env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       QWEN_TTS_LANGUAGE: English
 
     steps:
