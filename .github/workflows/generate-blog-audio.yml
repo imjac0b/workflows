@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: blog-audio-tts
+  group: blog-audio
   cancel-in-progress: true
 
 jobs:
@@ -51,15 +51,12 @@ jobs:
           cache: pip
           cache-dependency-path: generator/requirements.txt
 
-      - name: Install ffmpeg
+      - name: Install audio tools
         run: |
-          if command -v ffmpeg >/dev/null 2>&1; then
-            ffmpeg -version
-            exit 0
-          fi
-
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg sox libsox-dev libsox-fmt-all
+          ffmpeg -version
+          sox --version
 
       - name: Install Python dependencies
         working-directory: generator
