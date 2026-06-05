@@ -36,7 +36,7 @@ jobs:
       - name: List blog chunks
         id: chunks
         working-directory: generator
-        run: python scripts/list_blog_posts.py ../source/src/content/blog --max-chars 1400 >> "$GITHUB_OUTPUT"
+        run: python scripts/list_blog_posts.py ../source/src/content/blog --max-chars 500 >> "$GITHUB_OUTPUT"
 
   generate:
     needs:
@@ -124,7 +124,7 @@ jobs:
             --output-dir ../chunk-output/chunks \
             --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
             --public-prefix "" \
-            --max-chars 1400 \
+            --max-chars 500 \
             --chunk-index ${{ matrix.chunk.index }} \
             --no-manifest
 
