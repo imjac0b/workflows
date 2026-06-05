@@ -11,13 +11,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      posts: ${{ steps.posts.outputs.posts }}
+
+    steps:
+      - name: Check out audio generator
+        uses: actions/checkout@v4
+        with:
+          repository: imjac0b/blog-tts
+          token: ${{ secrets.BLOG_PAT }}
+          path: generator
+          lfs: true
+
+      - name: Check out blog source
+        uses: actions/checkout@v4
+        with:
+          repository: imjac0b/jacob-com-hk
+          token: ${{ secrets.BLOG_PAT }}
+          path: source
+          lfs: true
+
+      - name: List blog posts
+        id: posts
+        working-directory: generator
+        run: python scripts/list_blog_posts.py ../source/src/content/blog >> "$GITHUB_OUTPUT"
+
   generate:
+    needs:
+      - discover
+      - warm-cache
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        post: ${{ fromJson(needs.discover.outputs.posts) }}
 
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_HOME: ~/.cache/huggingface
+      HF_HUB_CACHE: ~/.cache/huggingface/hub
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      NUMEXPR_NUM_THREADS: "4"
       QWEN_TTS_LANGUAGE: English
+      TORCH_NUM_THREADS: "4"
 
     steps:
       - name: Check out audio generator
@@ -52,6 +93,15 @@ jobs:
           cache: pip
           cache-dependency-path: generator/requirements.txt
 
+      - name: Restore Hugging Face model cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/huggingface
+          key: huggingface-qwen3-tts-12hz-1.7b-${{ runner.os }}
+          restore-keys: |
+            huggingface-qwen3-tts-12hz-
+            huggingface-
+
       - name: Install audio tools
         run: |
           sudo apt-get update
@@ -74,20 +124,93 @@ jobs:
             echo "CUDA is unavailable on this runner; skipping flash-attn."
           fi
 
+      - name: Remove non-audio files from gh-pages output
+        working-directory: pages
+        run: |
+          find . -mindepth 1 -type f \
+            -not -path './.git/*' \
+            -not -name '*.mp3' \
+            -not -name '*.wav' \
+            -delete
+          find . -mindepth 1 -type d -empty -not -path './.git*' -delete
+
+      - name: Generate cloned-voice blog audio
+        working-directory: generator
+        run: |
+          python scripts/generate_blog_audio.py \
+            --blog-file ../source/src/content/blog/${{ matrix.post.file }} \
+            --output-dir ../pages \
+            --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+            --public-prefix "" \
+            --max-chars 1400 \
+            --no-manifest
+
+      - name: Upload generated blog audio
+        uses: actions/upload-artifact@v4
+        with:
+          name: blog-audio-${{ matrix.post.slug }}
+          path: |
+            pages/${{ matrix.post.slug }}.mp3
+            pages/${{ matrix.post.slug }}.wav
+          if-no-files-found: error
+
+  warm-cache:
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_HOME: ~/.cache/huggingface
+      HF_HUB_CACHE: ~/.cache/huggingface/hub
+
+    steps:
+      - name: Restore Hugging Face model cache
+        id: hf-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: huggingface-qwen3-tts-12hz-1.7b-${{ runner.os }}
+          restore-keys: |
+            huggingface-qwen3-tts-12hz-
+            huggingface-
+
+      - name: Download Qwen TTS model
+        if: steps.hf-cache.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+
+          snapshot_download("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
+          PY
+
+  publish:
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out gh-pages output
+        uses: actions/checkout@v4
+        with:
+          repository: imjac0b/blog-tts
+          ref: gh-pages
+          token: ${{ secrets.BLOG_PAT }}
+          path: pages
+          lfs: true
+
       - name: Clear gh-pages output
         working-directory: pages
         run: |
           git rm -r --ignore-unmatch .
           git clean -fdx
 
-      - name: Generate cloned-voice blog audio
-        working-directory: generator
-        run: |
-          python scripts/generate_blog_audio.py \
-            --blog-dir ../source/src/content/blog \
-            --output-dir ../pages \
-            --public-prefix "" \
-            --no-manifest
+      - name: Download generated audio
+        uses: actions/download-artifact@v4
+        with:
+          path: pages
+          merge-multiple: true
 
       - name: Publish generated audio to gh-pages
         working-directory: pages
