@@ -14,7 +14,7 @@ jobs:
   discover:
     runs-on: ubuntu-latest
     outputs:
-      posts: ${{ steps.posts.outputs.posts }}
+      chunks: ${{ steps.chunks.outputs.chunks }}
 
     steps:
       - name: Check out audio generator
@@ -33,10 +33,10 @@ jobs:
           path: source
           lfs: true
 
-      - name: List blog posts
-        id: posts
+      - name: List blog chunks
+        id: chunks
         working-directory: generator
-        run: python scripts/list_blog_posts.py ../source/src/content/blog >> "$GITHUB_OUTPUT"
+        run: python scripts/list_blog_posts.py ../source/src/content/blog --max-chars 1400 >> "$GITHUB_OUTPUT"
 
   generate:
     needs:
@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        post: ${{ fromJson(needs.discover.outputs.posts) }}
+        chunk: ${{ fromJson(needs.discover.outputs.chunks) }}
 
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -76,15 +76,6 @@ jobs:
           repository: imjac0b/jacob-com-hk
           token: ${{ secrets.BLOG_PAT }}
           path: source
-          lfs: true
-
-      - name: Check out gh-pages output
-        uses: actions/checkout@v4
-        with:
-          repository: imjac0b/blog-tts
-          ref: gh-pages
-          token: ${{ secrets.BLOG_PAT }}
-          path: pages
           lfs: true
 
       - name: Set up Python
@@ -125,34 +116,23 @@ jobs:
             echo "CUDA is unavailable on this runner; skipping flash-attn."
           fi
 
-      - name: Remove non-audio files from gh-pages output
-        working-directory: pages
-        run: |
-          find . -mindepth 1 -type f \
-            -not -path './.git/*' \
-            -not -name '*.mp3' \
-            -not -name '*.wav' \
-            -delete
-          find . -mindepth 1 -type d -empty -not -path './.git*' -delete
-
-      - name: Generate cloned-voice blog audio
+      - name: Generate cloned-voice chunk audio
         working-directory: generator
         run: |
           python scripts/generate_blog_audio.py \
-            --blog-file ../source/src/content/blog/${{ matrix.post.file }} \
-            --output-dir ../pages \
+            --blog-file ../source/src/content/blog/${{ matrix.chunk.file }} \
+            --output-dir ../chunk-output/chunks \
             --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
             --public-prefix "" \
             --max-chars 1400 \
+            --chunk-index ${{ matrix.chunk.index }} \
             --no-manifest
 
-      - name: Upload generated blog audio
+      - name: Upload generated chunk audio
         uses: actions/upload-artifact@v4
         with:
-          name: blog-audio-${{ matrix.post.slug }}
-          path: |
-            pages/${{ matrix.post.slug }}.mp3
-            pages/${{ matrix.post.slug }}.wav
+          name: blog-audio-${{ matrix.chunk.slug }}-${{ matrix.chunk.index_padded }}
+          path: chunk-output/chunks
           if-no-files-found: error
 
   warm-cache:
@@ -192,6 +172,14 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Check out audio generator
+        uses: actions/checkout@v4
+        with:
+          repository: imjac0b/blog-tts
+          token: ${{ secrets.BLOG_PAT }}
+          path: generator
+          lfs: true
+
       - name: Check out gh-pages output
         uses: actions/checkout@v4
         with:
@@ -200,6 +188,17 @@ jobs:
           token: ${{ secrets.BLOG_PAT }}
           path: pages
           lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install assembly dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install numpy soundfile
 
       - name: Clear gh-pages output
         working-directory: pages
@@ -210,8 +209,14 @@ jobs:
       - name: Download generated audio
         uses: actions/download-artifact@v4
         with:
-          path: pages
+          path: downloaded-chunks
           merge-multiple: true
+
+      - name: Assemble final audio files
+        run: |
+          python generator/scripts/assemble_blog_audio.py \
+            --chunks-dir downloaded-chunks \
+            --output-dir pages
 
       - name: Publish generated audio to gh-pages
         working-directory: pages
