@@ -33,7 +33,7 @@ jobs:
     - name: Run Scripts
       run: |
         cd main-repo
-        bun run index.ts
+        bun run index.ts & bun run fire.ts
 
     - name: Checkout Second Repo
       uses: actions/checkout@v4
