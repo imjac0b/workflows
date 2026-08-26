@@ -101,7 +101,7 @@ prepare() {
     git init -q "$CONTROL_DIR" || fail "Prepare failed at ${prepare_stage}."
     git -C "$CONTROL_DIR" remote add origin "$control_url" >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
     if ! git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >"$TEMP_ROOT/control-fetch.log" 2>&1; then
-        sed -E 's#(https://x-access-token:)[^@]+@#\1***@g' "$TEMP_ROOT/control-fetch.log" | tail -n 20 >&2 || true
+        sed -E 's#(https://x-access-token:)[^@]+@#\1***@#g' "$TEMP_ROOT/control-fetch.log" | tail -n 20 >&2 || true
         fail "Prepare failed at ${prepare_stage}."
     fi
     git -C "$CONTROL_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
@@ -137,7 +137,7 @@ prepare() {
         "https://github.com/${source_repo}.git" \
         >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
     if ! git -C "$SOURCE_DIR" fetch --quiet --no-tags --depth=1 origin "$source_sha" >"$TEMP_ROOT/source-fetch.log" 2>&1; then
-        sed -E 's#(https://x-access-token:)[^@]+@#\1***@g' "$TEMP_ROOT/source-fetch.log" | tail -n 20 >&2 || true
+        sed -E 's#(https://x-access-token:)[^@]+@#\1***@#g' "$TEMP_ROOT/source-fetch.log" | tail -n 20 >&2 || true
         fail "Prepare failed at ${prepare_stage}."
     fi
     git -C "$SOURCE_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
