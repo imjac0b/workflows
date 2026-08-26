@@ -76,6 +76,7 @@ prepare() {
     local job_file
     local source_repo
     local source_sha
+    local source_pat="${CI_SOURCE_PAT:-$GITHUB_PAT}"
 
     [[ "$job_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]] || fail "Prepare failed."
     [[ "$control_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Prepare failed."
@@ -83,6 +84,7 @@ prepare() {
     [[ "$jobs_path" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Prepare failed."
     [[ "$jobs_path" != *..* ]] || fail "Prepare failed."
     [[ -n "${GITHUB_PAT:-}" ]] || fail "Prepare failed."
+    [[ -n "$source_pat" ]] || fail "Prepare failed."
 
     configure_private_git "$GITHUB_PAT"
     control_url="https://x-access-token:${GITHUB_PAT}@github.com/${control_repo}.git"
@@ -118,7 +120,7 @@ prepare() {
 
     git init -q "$SOURCE_DIR" || fail "Prepare failed."
     git -C "$SOURCE_DIR" remote add origin \
-        "https://x-access-token:${GITHUB_PAT}@github.com/${source_repo}.git" \
+        "https://x-access-token:${source_pat}@github.com/${source_repo}.git" \
         >/dev/null 2>&1 || fail "Prepare failed."
     git -C "$SOURCE_DIR" fetch --quiet --no-tags --depth=1 origin "$source_sha" \
         >/dev/null 2>&1 || fail "Prepare failed."
