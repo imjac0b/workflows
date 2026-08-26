@@ -56,7 +56,6 @@ jobs:
           CI_CONTROL_BRANCH: ${{ secrets.CI_CONTROL_BRANCH }}
           CI_CONTROL_JOBS_PATH: ${{ secrets.CI_CONTROL_JOBS_PATH }}
           GITHUB_PAT: ${{ secrets.CI_GITHUB_PAT }}
-          CI_SOURCE_PAT: ${{ secrets.CI_SOURCE_PAT }}
         run: bash scripts/ios-builder.sh prepare
 
       - name: Build

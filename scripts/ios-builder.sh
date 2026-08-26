@@ -33,7 +33,9 @@ configure_private_git() {
     local token="$1"
 
     export GIT_TERMINAL_PROMPT=0
+    export GIT_CONFIG_NOSYSTEM=1
     rm -f "$GIT_CONFIG_PATH"
+    git config --file "$GIT_CONFIG_PATH" --add credential.helper ""
     git config --file "$GIT_CONFIG_PATH" --add \
         "url.https://x-access-token:${token}@github.com/.insteadOf" \
         "https://github.com/"
@@ -62,6 +64,8 @@ write_runtime_environment() {
         printf 'IOS_CI_OUTPUT=%s\n' "$OUTPUT_DIR"
         printf 'IOS_CI_DERIVED_DATA=%s\n' "$DERIVED_DATA_DIR"
         printf 'GIT_CONFIG_GLOBAL=%s\n' "$GIT_CONFIG_PATH"
+        printf 'GIT_CONFIG_NOSYSTEM=1\n'
+        printf 'GIT_TERMINAL_PROMPT=0\n'
     } >> "${GITHUB_ENV:?GITHUB_ENV is required}"
 }
 
@@ -77,7 +81,6 @@ prepare() {
     local job_file
     local source_repo
     local source_sha
-    local source_pat="${CI_SOURCE_PAT:-$GITHUB_PAT}"
     local prepare_stage="input validation"
 
     [[ "$job_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]] || fail "Prepare failed at ${prepare_stage}."
@@ -86,10 +89,9 @@ prepare() {
     [[ "$jobs_path" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Prepare failed at ${prepare_stage}."
     [[ "$jobs_path" != *..* ]] || fail "Prepare failed at ${prepare_stage}."
     [[ -n "${GITHUB_PAT:-}" ]] || fail "Prepare failed at ${prepare_stage}."
-    [[ -n "$source_pat" ]] || fail "Prepare failed at ${prepare_stage}."
 
     configure_private_git "$GITHUB_PAT"
-    control_url="https://x-access-token:${GITHUB_PAT}@github.com/${control_repo}.git"
+    control_url="https://github.com/${control_repo}.git"
 
     prepare_stage="control workspace"
     rm -rf "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
@@ -98,7 +100,10 @@ prepare() {
     prepare_stage="control repository fetch"
     git init -q "$CONTROL_DIR" || fail "Prepare failed at ${prepare_stage}."
     git -C "$CONTROL_DIR" remote add origin "$control_url" >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
-    git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
+    if ! git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >"$TEMP_ROOT/control-fetch.log" 2>&1; then
+        sed -E 's#(https://x-access-token:)[^@]+@#\1***@g' "$TEMP_ROOT/control-fetch.log" | tail -n 20 >&2 || true
+        fail "Prepare failed at ${prepare_stage}."
+    fi
     git -C "$CONTROL_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
 
     prepare_stage="queued job lookup"
@@ -129,10 +134,12 @@ prepare() {
     prepare_stage="source repository fetch"
     git init -q "$SOURCE_DIR" || fail "Prepare failed at ${prepare_stage}."
     git -C "$SOURCE_DIR" remote add origin \
-        "https://x-access-token:${source_pat}@github.com/${source_repo}.git" \
+        "https://github.com/${source_repo}.git" \
         >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
-    git -C "$SOURCE_DIR" fetch --quiet --no-tags --depth=1 origin "$source_sha" \
-        >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
+    if ! git -C "$SOURCE_DIR" fetch --quiet --no-tags --depth=1 origin "$source_sha" >"$TEMP_ROOT/source-fetch.log" 2>&1; then
+        sed -E 's#(https://x-access-token:)[^@]+@#\1***@g' "$TEMP_ROOT/source-fetch.log" | tail -n 20 >&2 || true
+        fail "Prepare failed at ${prepare_stage}."
+    fi
     git -C "$SOURCE_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
 
     prepare_stage="submodule initialization"
@@ -233,7 +240,8 @@ finalize() {
     rm -rf "$SOURCE_DIR" "$CONTROL_DIR" "$CONFIG_PATH" "$OUTPUT_DIR" \
         "$DERIVED_DATA_DIR" "$GIT_CONFIG_PATH" "$BUNDLE_ROOT" \
         "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log" \
-        "$TEMP_ROOT/build.log" "$TEMP_ROOT/publish.log"
+        "$TEMP_ROOT/build.log" "$TEMP_ROOT/publish.log" \
+        "$TEMP_ROOT/control-fetch.log" "$TEMP_ROOT/source-fetch.log"
     printf '%s\n' 'Finalize completed.'
 }
 
