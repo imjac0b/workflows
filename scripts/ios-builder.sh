@@ -32,7 +32,7 @@ require_runtime_paths() {
 configure_private_git() {
     local token="$1"
 
-    rm -f -- "$GIT_CONFIG_PATH"
+    rm -f "$GIT_CONFIG_PATH"
     git config --file "$GIT_CONFIG_PATH" --add \
         "url.https://x-access-token:${token}@github.com/.insteadOf" \
         "https://github.com/"
@@ -87,8 +87,8 @@ prepare() {
     configure_private_git "$GITHUB_PAT"
     control_url="https://x-access-token:${GITHUB_PAT}@github.com/${control_repo}.git"
 
-    rm -rf -- "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
-    mkdir -p -- "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
+    rm -rf "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
+    mkdir -p "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
 
     git init -q "$CONTROL_DIR" || fail "Prepare failed."
     git -C "$CONTROL_DIR" remote add origin "$control_url" >/dev/null 2>&1 || fail "Prepare failed."
@@ -107,8 +107,8 @@ prepare() {
         and (.testflight | type == "object")
     ' "$job_file" >/dev/null 2>&1 || fail "Prepare failed."
 
-    cp -- "$job_file" "$CONFIG_PATH" || fail "Prepare failed."
-    chmod 600 -- "$CONFIG_PATH"
+    cp "$job_file" "$CONFIG_PATH" || fail "Prepare failed."
+    chmod 600 "$CONFIG_PATH"
     mask_config_values
 
     source_repo="$(jq -er '.source.repository' "$CONFIG_PATH")" || fail "Prepare failed."
@@ -134,7 +134,7 @@ prepare() {
         git -C "$SOURCE_DIR" lfs pull --quiet >/dev/null 2>&1 || fail "Prepare failed."
     fi
 
-    chmod 700 -- "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
+    chmod 700 "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
     write_runtime_environment
     printf '%s\n' 'Prepare completed.'
 }
@@ -207,7 +207,7 @@ publish() {
 }
 
 finalize() {
-    rm -rf -- "$SOURCE_DIR" "$CONTROL_DIR" "$CONFIG_PATH" "$OUTPUT_DIR" \
+    rm -rf "$SOURCE_DIR" "$CONTROL_DIR" "$CONFIG_PATH" "$OUTPUT_DIR" \
         "$DERIVED_DATA_DIR" "$GIT_CONFIG_PATH" "$BUNDLE_PATH" \
         "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log" \
         "$TEMP_ROOT/build.log" "$TEMP_ROOT/publish.log"
