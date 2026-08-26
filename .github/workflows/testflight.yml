@@ -9,11 +9,8 @@ on:
 permissions:
   contents: read
 
-# The opaque job token keeps the public queue independent from private app names.
-# A single queue also guarantees unique App Store build numbers across concurrent submissions.
-concurrency:
-  group: ios-build-queue
-  cancel-in-progress: false
+# Each dispatch carries one opaque job. App source workflows serialize repeated pushes per app,
+# while independent apps can build concurrently and retain each pending dispatch.
 
 jobs:
   build:

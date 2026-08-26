@@ -32,6 +32,7 @@ require_runtime_paths() {
 configure_private_git() {
     local token="$1"
 
+    export GIT_TERMINAL_PROMPT=0
     rm -f "$GIT_CONFIG_PATH"
     git config --file "$GIT_CONFIG_PATH" --add \
         "url.https://x-access-token:${token}@github.com/.insteadOf" \
@@ -77,29 +78,34 @@ prepare() {
     local source_repo
     local source_sha
     local source_pat="${CI_SOURCE_PAT:-$GITHUB_PAT}"
+    local prepare_stage="input validation"
 
-    [[ "$job_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]] || fail "Prepare failed."
-    [[ "$control_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Prepare failed."
-    [[ "$control_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Prepare failed."
-    [[ "$jobs_path" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Prepare failed."
-    [[ "$jobs_path" != *..* ]] || fail "Prepare failed."
-    [[ -n "${GITHUB_PAT:-}" ]] || fail "Prepare failed."
-    [[ -n "$source_pat" ]] || fail "Prepare failed."
+    [[ "$job_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]] || fail "Prepare failed at ${prepare_stage}."
+    [[ "$control_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Prepare failed at ${prepare_stage}."
+    [[ "$control_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Prepare failed at ${prepare_stage}."
+    [[ "$jobs_path" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Prepare failed at ${prepare_stage}."
+    [[ "$jobs_path" != *..* ]] || fail "Prepare failed at ${prepare_stage}."
+    [[ -n "${GITHUB_PAT:-}" ]] || fail "Prepare failed at ${prepare_stage}."
+    [[ -n "$source_pat" ]] || fail "Prepare failed at ${prepare_stage}."
 
     configure_private_git "$GITHUB_PAT"
     control_url="https://x-access-token:${GITHUB_PAT}@github.com/${control_repo}.git"
 
+    prepare_stage="control workspace"
     rm -rf "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
-    mkdir -p "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
+    mkdir -p "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR" || fail "Prepare failed at ${prepare_stage}."
 
-    git init -q "$CONTROL_DIR" || fail "Prepare failed."
-    git -C "$CONTROL_DIR" remote add origin "$control_url" >/dev/null 2>&1 || fail "Prepare failed."
-    git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >/dev/null 2>&1 || fail "Prepare failed."
-    git -C "$CONTROL_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Prepare failed."
+    prepare_stage="control repository fetch"
+    git init -q "$CONTROL_DIR" || fail "Prepare failed at ${prepare_stage}."
+    git -C "$CONTROL_DIR" remote add origin "$control_url" >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
+    git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
+    git -C "$CONTROL_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
 
+    prepare_stage="queued job lookup"
     job_file="$CONTROL_DIR/$jobs_path/$job_id.json"
-    [[ -f "$job_file" ]] || fail "Prepare failed."
+    [[ -f "$job_file" ]] || fail "Prepare failed at ${prepare_stage}."
 
+    prepare_stage="queued job validation"
     jq -e '
         (.source.repository | type == "string" and length > 0)
         and (.source.sha | type == "string" and test("^[0-9A-Fa-f]{7,64}$"))
@@ -107,33 +113,38 @@ prepare() {
         and (.project.targets | type == "array" and length > 0)
         and (.signing.git_url | type == "string" and length > 0)
         and (.testflight | type == "object")
-    ' "$job_file" >/dev/null 2>&1 || fail "Prepare failed."
+    ' "$job_file" >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
 
-    cp "$job_file" "$CONFIG_PATH" || fail "Prepare failed."
+    prepare_stage="runtime configuration"
+    cp "$job_file" "$CONFIG_PATH" || fail "Prepare failed at ${prepare_stage}."
     chmod 600 "$CONFIG_PATH"
     mask_config_values
 
-    source_repo="$(jq -er '.source.repository' "$CONFIG_PATH")" || fail "Prepare failed."
-    source_sha="$(jq -er '.source.sha' "$CONFIG_PATH")" || fail "Prepare failed."
-    [[ "$source_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Prepare failed."
-    [[ "$source_sha" =~ ^[0-9A-Fa-f]{7,64}$ ]] || fail "Prepare failed."
+    prepare_stage="source reference validation"
+    source_repo="$(jq -er '.source.repository' "$CONFIG_PATH")" || fail "Prepare failed at ${prepare_stage}."
+    source_sha="$(jq -er '.source.sha' "$CONFIG_PATH")" || fail "Prepare failed at ${prepare_stage}."
+    [[ "$source_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Prepare failed at ${prepare_stage}."
+    [[ "$source_sha" =~ ^[0-9A-Fa-f]{7,64}$ ]] || fail "Prepare failed at ${prepare_stage}."
 
-    git init -q "$SOURCE_DIR" || fail "Prepare failed."
+    prepare_stage="source repository fetch"
+    git init -q "$SOURCE_DIR" || fail "Prepare failed at ${prepare_stage}."
     git -C "$SOURCE_DIR" remote add origin \
         "https://x-access-token:${source_pat}@github.com/${source_repo}.git" \
-        >/dev/null 2>&1 || fail "Prepare failed."
+        >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
     git -C "$SOURCE_DIR" fetch --quiet --no-tags --depth=1 origin "$source_sha" \
-        >/dev/null 2>&1 || fail "Prepare failed."
-    git -C "$SOURCE_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Prepare failed."
+        >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
+    git -C "$SOURCE_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
 
+    prepare_stage="submodule initialization"
     if [[ -f "$SOURCE_DIR/.gitmodules" ]]; then
-        git -C "$SOURCE_DIR" submodule sync --recursive >/dev/null 2>&1 || fail "Prepare failed."
-        git -C "$SOURCE_DIR" submodule update --init --recursive --quiet >/dev/null 2>&1 || fail "Prepare failed."
+        git -C "$SOURCE_DIR" submodule sync --recursive >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
+        git -C "$SOURCE_DIR" submodule update --init --recursive --quiet >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
     fi
 
     if jq -e '.source.lfs == true' "$CONFIG_PATH" >/dev/null 2>&1; then
         require_command git-lfs
-        git -C "$SOURCE_DIR" lfs pull --quiet >/dev/null 2>&1 || fail "Prepare failed."
+        prepare_stage="Git LFS download"
+        git -C "$SOURCE_DIR" lfs pull --quiet >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
     fi
 
     chmod 700 "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"

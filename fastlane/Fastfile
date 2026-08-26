@@ -239,7 +239,13 @@ platform :ios do
       ipa_path = BlindBuilder.target_ipa_path(index)
       raise "Publish failed." unless File.file?(ipa_path)
 
-      upload_to_testflight(BlindBuilder.upload_options(config, target, api_key, ipa_path))
+      begin
+        upload_to_testflight(BlindBuilder.upload_options(config, target, api_key, ipa_path))
+      rescue StandardError => error
+        raise unless error.message.include?("Another build is in review")
+
+        UI.important("An existing build is already in beta review; the uploaded build remains available for the configured testers.")
+      end
     end
   end
 end
