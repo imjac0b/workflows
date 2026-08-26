@@ -183,6 +183,8 @@ run_lane() {
         BUNDLE_GEMFILE="$WORKER_ROOT/Gemfile" \
         BUNDLE_PATH="$BUNDLE_ROOT" \
         bundle exec fastlane ios "$lane" "config:$IOS_CI_CONFIG") >"$log_path" 2>&1; then
+        printf '%s\n' "${label} log tail:"
+        tail -n 160 "$log_path" || true
         fail "$label failed."
     fi
 
