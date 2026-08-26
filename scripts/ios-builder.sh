@@ -10,7 +10,7 @@ readonly CONFIG_PATH="$TEMP_ROOT/config.json"
 readonly OUTPUT_DIR="$TEMP_ROOT/output"
 readonly DERIVED_DATA_DIR="$TEMP_ROOT/derived-data"
 readonly GIT_CONFIG_PATH="$TEMP_ROOT/gitconfig"
-readonly BUNDLE_PATH="$TEMP_ROOT/bundle"
+readonly BUNDLE_ROOT="$TEMP_ROOT/bundle"
 
 fail() {
     printf '%s\n' "${1:-Build failed.}" >&2
@@ -145,14 +145,14 @@ install_dependencies() {
 
     if (cd "$WORKER_ROOT" && \
         BUNDLE_GEMFILE="$WORKER_ROOT/Gemfile" \
-        BUNDLE_PATH="$BUNDLE_PATH" \
+        BUNDLE_PATH="$BUNDLE_ROOT" \
         bundle check >/dev/null 2>&1); then
         return
     fi
 
     if ! (cd "$WORKER_ROOT" && \
         BUNDLE_GEMFILE="$WORKER_ROOT/Gemfile" \
-        BUNDLE_PATH="$BUNDLE_PATH" \
+        BUNDLE_PATH="$BUNDLE_ROOT" \
         bundle install --jobs 4 --retry 3) >"$TEMP_ROOT/dependencies.log" 2>&1; then
         fail "Build failed."
     fi
@@ -181,7 +181,7 @@ run_lane() {
 
     if ! (cd "$WORKER_ROOT" && \
         BUNDLE_GEMFILE="$WORKER_ROOT/Gemfile" \
-        BUNDLE_PATH="$BUNDLE_PATH" \
+        BUNDLE_PATH="$BUNDLE_ROOT" \
         bundle exec fastlane ios "$lane" "config:$IOS_CI_CONFIG") >"$log_path" 2>&1; then
         fail "$label failed."
     fi
@@ -208,7 +208,7 @@ publish() {
 
 finalize() {
     rm -rf "$SOURCE_DIR" "$CONTROL_DIR" "$CONFIG_PATH" "$OUTPUT_DIR" \
-        "$DERIVED_DATA_DIR" "$GIT_CONFIG_PATH" "$BUNDLE_PATH" \
+        "$DERIVED_DATA_DIR" "$GIT_CONFIG_PATH" "$BUNDLE_ROOT" \
         "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log" \
         "$TEMP_ROOT/build.log" "$TEMP_ROOT/publish.log"
     printf '%s\n' 'Finalize completed.'
