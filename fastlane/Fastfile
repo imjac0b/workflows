@@ -172,6 +172,12 @@ module BlindBuilder
     FileUtils.mkdir_p(target_output)
     FileUtils.mkdir_p(target_derived_data)
 
+    xcode_version, status = Open3.capture2("xcodebuild", "-version")
+    raise "Build configuration could not be loaded." unless status.success?
+
+    xcargs = ["CURRENT_PROJECT_VERSION=#{build_number}"]
+    xcargs << "SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) XCODE27_SDK'" if xcode_version.lines.first.to_s.start_with?("Xcode 27.")
+
     options = {
       scheme: target.fetch("scheme"),
       configuration: build_configuration(config, target),
@@ -182,7 +188,7 @@ module BlindBuilder
       derived_data_path: target_derived_data,
       clean: true,
       destination: target_platform(target) == "appletvos" ? "generic/platform=tvOS" : "generic/platform=iOS",
-      xcargs: "CURRENT_PROJECT_VERSION=#{build_number}"
+      xcargs: xcargs.join(" ")
     }
     options[kind.to_sym] = path
     options

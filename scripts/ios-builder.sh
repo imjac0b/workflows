@@ -158,10 +158,18 @@ install_dependencies() {
     fi
 }
 
-assert_xcode_27() {
+assert_xcode_version() {
     local version_line
+    local actual_major
+    local expected_major
+
     version_line="$(xcodebuild -version 2>/dev/null | sed -n '1p' || true)"
-    [[ "$version_line" == Xcode\ 27.* ]] || fail "Build failed."
+    actual_major="${version_line#Xcode }"
+    actual_major="${actual_major%%.*}"
+    expected_major="${IOS_CI_EXPECTED_XCODE_MAJOR:-}"
+
+    [[ "$actual_major" =~ ^[0-9]+$ ]] || fail "Build failed."
+    [[ -z "$expected_major" || "$actual_major" == "$expected_major" ]] || fail "Build failed."
 }
 
 run_prebuild() {
@@ -195,7 +203,7 @@ build() {
     require_command xcodebuild
     require_command jq
     require_runtime_paths
-    assert_xcode_27
+    assert_xcode_version
     run_prebuild
     install_dependencies
     run_lane ci_build Build "$TEMP_ROOT/build.log"
