@@ -91,7 +91,7 @@ prepare() {
     [[ -n "${GITHUB_PAT:-}" ]] || fail "Prepare failed at ${prepare_stage}."
 
     configure_private_git "$GITHUB_PAT"
-    control_url="https://github.com/${control_repo}.git"
+    control_url="https://x-access-token:${GITHUB_PAT}@github.com/${control_repo}.git"
 
     prepare_stage="control workspace"
     rm -rf "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
@@ -134,7 +134,7 @@ prepare() {
     prepare_stage="source repository fetch"
     git init -q "$SOURCE_DIR" || fail "Prepare failed at ${prepare_stage}."
     git -C "$SOURCE_DIR" remote add origin \
-        "https://github.com/${source_repo}.git" \
+        "https://x-access-token:${GITHUB_PAT}@github.com/${source_repo}.git" \
         >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
     if ! git -C "$SOURCE_DIR" fetch --quiet --no-tags --depth=1 origin "$source_sha" >"$TEMP_ROOT/source-fetch.log" 2>&1; then
         sed -E 's#(https://x-access-token:)[^@]+@#\1***@#g' "$TEMP_ROOT/source-fetch.log" | tail -n 20 >&2 || true
