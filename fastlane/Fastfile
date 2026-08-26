@@ -181,6 +181,7 @@ module BlindBuilder
       output_name: "build",
       derived_data_path: target_derived_data,
       clean: true,
+      destination: target_platform(target) == "appletvos" ? "generic/platform=tvOS" : "generic/platform=iOS",
       xcargs: "CURRENT_PROJECT_VERSION=#{build_number}"
     }
     options[kind.to_sym] = path
