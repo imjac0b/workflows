@@ -1,0 +1,225 @@
+require "base64"
+require "fileutils"
+require "json"
+require "open3"
+
+module BlindBuilder
+  module_function
+
+  def load_config(options)
+    path = options[:config] || options["config"] || ENV.fetch("IOS_CI_CONFIG")
+    JSON.parse(File.read(path))
+  rescue KeyError, Errno::ENOENT, JSON::ParserError
+    raise "Build configuration could not be loaded."
+  end
+
+  def source_root
+    ENV.fetch("IOS_CI_SOURCE")
+  end
+
+  def output_root
+    ENV.fetch("IOS_CI_OUTPUT")
+  end
+
+  def derived_data_root
+    ENV.fetch("IOS_CI_DERIVED_DATA")
+  end
+
+  def project_settings(config, target)
+    project = config.fetch("project")
+    path = target["path"] || project.fetch("path")
+    kind = target.fetch("kind", project.fetch("kind", path.end_with?(".xcworkspace") ? "workspace" : "project"))
+    raise "Build configuration could not be loaded." unless %w[project workspace].include?(kind)
+
+    [kind, File.join(source_root, path)]
+  end
+
+  def build_configuration(config, target)
+    target.fetch("configuration", config.fetch("build", {}).fetch("configuration", "Release"))
+  end
+
+  def target_platform(target)
+    platform = target.fetch("platform", target.fetch("sdk", "iphoneos") == "appletvos" ? "appletvos" : "ios")
+    raise "Build configuration could not be loaded." unless %w[ios appletvos].include?(platform)
+
+    platform
+  end
+
+  def signing_platform(target)
+    target_platform(target) == "appletvos" ? "tvos" : "ios"
+  end
+
+  def target_bundle_ids(target)
+    bundle_ids = Array(target.fetch("bundle_ids")).map(&:to_s).reject(&:empty?)
+    raise "Build configuration could not be loaded." if bundle_ids.empty?
+
+    bundle_ids
+  end
+
+  def api_key_options
+    private_key = ENV.fetch("ASC_PRIVATE_KEY")
+    private_key = Base64.strict_decode64(private_key) if ENV.fetch("ASC_PRIVATE_KEY_BASE64", "").casecmp?("true")
+
+    {
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_content: private_key,
+      is_key_content_base64: false,
+      duration: 1200,
+      in_house: false
+    }
+  end
+
+  def xcode_setting(config, target, key)
+    kind, path = project_settings(config, target)
+    command = ["xcodebuild", kind == "workspace" ? "-workspace" : "-project", path,
+               "-scheme", target.fetch("scheme"),
+               "-configuration", build_configuration(config, target),
+               "-showBuildSettings"]
+    output, status = Open3.capture2e(*command, chdir: source_root)
+    raise "Build configuration could not be loaded." unless status.success?
+
+    output.each_line do |line|
+      match = line.match(/^\s*#{Regexp.escape(key)}\s*=\s*(.*?)\s*$/)
+      return match[1] if match
+    end
+
+    nil
+  end
+
+  def marketing_version(config, target)
+    version = target["version"] || config.fetch("build", {})["marketing_version"]
+    version ||= xcode_setting(config, target, "MARKETING_VERSION")
+    raise "Build configuration could not be loaded." if version.to_s.empty?
+
+    version.to_s
+  end
+
+  def latest_build_number_options(config, target, api_key)
+    {
+      api_key: api_key,
+      app_identifier: target.fetch("app_identifier", target_bundle_ids(target).first),
+      version: marketing_version(config, target),
+      platform: target_platform(target),
+      initial_build_number: 0
+    }
+  end
+
+  def signing_options(config, target, api_key)
+    signing = config.fetch("signing")
+    {
+      type: signing.fetch("type", "appstore"),
+      readonly: true,
+      git_url: signing.fetch("git_url"),
+      git_branch: signing.fetch("branch", "main"),
+      app_identifier: target_bundle_ids(target),
+      platform: signing_platform(target),
+      api_key: api_key,
+      clone_branch_directly: true
+    }
+  end
+
+  def generated_changelog(config)
+    configured = config.fetch("testflight", {})["changelog"]
+    return configured.to_s unless configured.to_s.empty?
+
+    output, status = Open3.capture2("git", "-C", source_root, "log", "-10", "--pretty=format:%s")
+    raise "Build configuration could not be loaded." unless status.success?
+
+    messages = output.lines.map(&:strip).reject(&:empty?)
+    raise "Build configuration could not be loaded." if messages.empty?
+
+    messages.map { |message| "• #{message}" }.join("\n")
+  end
+
+  def upload_options(config, target, api_key, ipa_path)
+    testflight = config.fetch("testflight", {})
+    groups = target["testflight_groups"] || testflight["groups"] || []
+    groups = Array(groups).map(&:to_s).reject(&:empty?)
+    distribute_external = testflight.fetch("distribute_external", true)
+    skip_waiting = testflight.fetch("skip_waiting_for_build_processing", false)
+
+    raise "Build configuration could not be loaded." if distribute_external && groups.empty?
+    raise "Build configuration could not be loaded." if distribute_external && skip_waiting
+
+    options = {
+      api_key: api_key,
+      ipa: ipa_path,
+      app_identifier: target.fetch("app_identifier", target_bundle_ids(target).first),
+      app_platform: target_platform(target),
+      distribute_external: distribute_external,
+      notify_external_testers: testflight.fetch("notify_external_testers", true),
+      submit_beta_review: testflight.fetch("submit_beta_review", true),
+      skip_waiting_for_build_processing: skip_waiting,
+      uses_non_exempt_encryption: testflight.fetch("uses_non_exempt_encryption", false),
+      changelog: target["changelog"] || generated_changelog(config),
+      wait_processing_interval: testflight.fetch("wait_processing_interval", 30),
+      wait_processing_timeout_duration: testflight.fetch("wait_processing_timeout_duration", 3600)
+    }
+
+    options[:groups] = groups unless groups.empty?
+    %w[beta_app_review_info localized_app_info localized_build_info].each do |key|
+      value = target[key] || testflight[key]
+      options[key.to_sym] = value if value
+    end
+    options
+  end
+
+  def build_options(config, target, index, build_number)
+    kind, path = project_settings(config, target)
+    target_output = File.join(output_root, format("target-%02d", index + 1))
+    target_derived_data = File.join(derived_data_root, format("target-%02d", index + 1))
+    FileUtils.mkdir_p(target_output)
+    FileUtils.mkdir_p(target_derived_data)
+
+    options = {
+      scheme: target.fetch("scheme"),
+      configuration: build_configuration(config, target),
+      sdk: target.fetch("sdk"),
+      export_method: target.fetch("export_method", "app-store"),
+      output_directory: target_output,
+      output_name: "build",
+      derived_data_path: target_derived_data,
+      clean: true,
+      xcargs: "CURRENT_PROJECT_VERSION=#{build_number}"
+    }
+    options[kind.to_sym] = path
+    options
+  end
+
+  def target_ipa_path(index)
+    File.join(output_root, format("target-%02d", index + 1), "build.ipa")
+  end
+end
+
+default_platform(:ios)
+
+platform :ios do
+  lane :ci_build do |options|
+    config = BlindBuilder.load_config(options)
+    api_key = app_store_connect_api_key(BlindBuilder.api_key_options)
+    targets = config.fetch("project").fetch("targets")
+
+    setup_ci
+    targets.each_with_index do |target, index|
+      Dir.chdir(BlindBuilder.source_root) do
+        latest = latest_testflight_build_number(BlindBuilder.latest_build_number_options(config, target, api_key))
+        match(BlindBuilder.signing_options(config, target, api_key))
+        build_app(BlindBuilder.build_options(config, target, index, latest.to_i + 1))
+      end
+    end
+  end
+
+  lane :ci_publish do |options|
+    config = BlindBuilder.load_config(options)
+    api_key = app_store_connect_api_key(BlindBuilder.api_key_options)
+    targets = config.fetch("project").fetch("targets")
+
+    targets.each_with_index do |target, index|
+      ipa_path = BlindBuilder.target_ipa_path(index)
+      raise "Publish failed." unless File.file?(ipa_path)
+
+      upload_to_testflight(BlindBuilder.upload_options(config, target, api_key, ipa_path))
+    end
+  end
+end

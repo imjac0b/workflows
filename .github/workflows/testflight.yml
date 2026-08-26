@@ -1,0 +1,59 @@
+name: Build
+
+run-name: Build ${{ github.run_id }}
+
+on:
+  repository_dispatch:
+    types: [build]
+
+permissions:
+  contents: read
+
+# The opaque job token keeps the public queue independent from private app names.
+# A single queue also guarantees unique App Store build numbers across concurrent submissions.
+concurrency:
+  group: ios-build-queue
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: xcode-27
+    timeout-minutes: 180
+
+    steps:
+      - name: Prepare worker
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare
+        env:
+          IOS_CI_JOB_ID: ${{ github.event.client_payload.job }}
+          CI_CONTROL_REPO: ${{ secrets.CI_CONTROL_REPO }}
+          CI_CONTROL_BRANCH: ${{ secrets.CI_CONTROL_BRANCH }}
+          CI_CONTROL_JOBS_PATH: ${{ secrets.CI_CONTROL_JOBS_PATH }}
+          GITHUB_PAT: ${{ secrets.CI_GITHUB_PAT }}
+        run: bash scripts/ios-builder.sh prepare
+
+      - name: Build
+        env:
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
+        run: bash scripts/ios-builder.sh build
+
+      - name: Publish
+        if: success()
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
+        run: bash scripts/ios-builder.sh publish
+
+      - name: Finalize
+        if: always()
+        run: bash scripts/ios-builder.sh finalize
