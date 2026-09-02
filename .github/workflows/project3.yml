@@ -8,12 +8,11 @@ on:
 
 concurrency:
   group: "project-3"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   project3:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
 
     steps:
     - name: Checkout Main Repo
@@ -26,26 +25,15 @@ jobs:
     - name: Setup Bun
       uses: oven-sh/setup-bun@v2
 
-    - name: Install Browser Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends xvfb
-        google-chrome --version || chromium --version
-
     - name: Install Dependencies
-      working-directory: main-repo
-      run: bun install --frozen-lockfile
-
-    - name: Run fire.ts
-      working-directory: main-repo
       run: |
-        mkdir -p output
-        bun run fire.ts
-
-    - name: Run Other Token Scripts
-      working-directory: main-repo
-      continue-on-error: true
-      run: bun run index.ts
+        cd main-repo
+        bun i
+      
+    - name: Run Scripts
+      run: |
+        cd main-repo
+        bun run index.ts
 
     - name: Checkout Second Repo
       uses: actions/checkout@v4
@@ -56,16 +44,16 @@ jobs:
 
     - name: Copy Folder to Second Repo
       run: |
-        cp -a main-repo/output/. result-repo/
+        cp -r main-repo/output/* result-repo/
 
     - name: Commit and Push Changes
-      working-directory: result-repo
       run: |
+        cd result-repo
         git config user.name github-actions
         git config user.email github-actions@github.com
         git add .
         if [ -n "$(git status --porcelain)" ]; then
-          git commit -m "Run fire script reliably in CI"
+          git commit -m "Update"
           git push origin main
         else
           echo "No changes to commit."
