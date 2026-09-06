@@ -14,23 +14,11 @@ permissions:
 
 jobs:
   build:
-    name: Build (${{ matrix.lane }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - lane: release
-            runner: macos-26
-            xcode_major: "26"
-            publish: true
-          - lane: xcode27
-            runner: xcode-27
-            xcode_major: "27"
-            publish: false
-    runs-on: ${{ matrix.runner }}
+    name: Build
+    runs-on: xcode-27
     timeout-minutes: 180
     env:
-      IOS_CI_EXPECTED_XCODE_MAJOR: ${{ matrix.xcode_major }}
+      IOS_CI_EXPECTED_XCODE_MAJOR: "27"
 
     steps:
       - name: Prepare worker
@@ -38,16 +26,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Select Xcode
-        run: |
-          if [[ "${{ matrix.xcode_major }}" == "26" ]]; then
-            xcode_path="$(find /Applications -maxdepth 1 -type d -name 'Xcode_26.6*.app' -print -quit)"
-            if [[ -z "$xcode_path" ]]; then
-              xcode_path="/Applications/Xcode.app"
-            fi
-            sudo xcode-select --switch "$xcode_path/Contents/Developer"
-          fi
-          xcodebuild -version
+      - name: Report Xcode
+        run: xcodebuild -version
 
       - name: Prepare
         env:
@@ -68,7 +48,7 @@ jobs:
         run: bash scripts/ios-builder.sh build
 
       - name: Publish
-        if: success() && matrix.publish
+        if: success()
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
