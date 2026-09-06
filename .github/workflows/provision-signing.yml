@@ -1,0 +1,77 @@
+name: Provision signing
+
+run-name: Provision ${{ inputs.bundle_ids }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_ids:
+        description: Comma-separated bundle identifiers to provision
+        required: true
+        type: string
+      platform:
+        description: Signing platform
+        required: true
+        default: ios
+        type: choice
+        options:
+          - ios
+          - tvos
+      type:
+        description: Profile type
+        required: true
+        default: appstore
+        type: choice
+        options:
+          - appstore
+          - adhoc
+          - development
+      git_url:
+        description: Signing repository
+        required: true
+        default: https://github.com/imjac0b/ios-signing.git
+        type: string
+      git_branch:
+        description: Signing repository branch
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+# Writes to the signing repository, so never let two provisioning runs overlap.
+concurrency:
+  group: ios-signing-provision
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Provision
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Prepare worker
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Provision
+        env:
+          IOS_CI_PROVISION_BUNDLE_IDS: ${{ inputs.bundle_ids }}
+          IOS_CI_PROVISION_PLATFORM: ${{ inputs.platform }}
+          IOS_CI_PROVISION_TYPE: ${{ inputs.type }}
+          IOS_CI_PROVISION_GIT_URL: ${{ inputs.git_url }}
+          IOS_CI_PROVISION_GIT_BRANCH: ${{ inputs.git_branch }}
+          GITHUB_PAT: ${{ secrets.CI_GITHUB_PAT }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
+        run: bash scripts/ios-builder.sh provision
+
+      - name: Finalize
+        if: always()
+        run: bash scripts/ios-builder.sh finalize

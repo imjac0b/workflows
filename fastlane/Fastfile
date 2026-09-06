@@ -210,6 +210,30 @@ module BlindBuilder
   def target_ipa_path(index)
     File.join(output_root, format("target-%02d", index + 1), "build.ipa")
   end
+
+  def provision_options(options)
+    bundle_ids = options[:bundle_ids].to_s.split(",").map(&:strip).reject(&:empty?)
+    platform = options[:platform].to_s
+    type = options[:type].to_s
+    git_url = options[:git_url].to_s
+    git_branch = options[:git_branch].to_s
+
+    raise "Provision failed." if bundle_ids.empty?
+    raise "Provision failed." unless %w[ios tvos].include?(platform)
+    raise "Provision failed." unless %w[appstore adhoc development].include?(type)
+    raise "Provision failed." unless git_url.match?(%r{\Ahttps://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git\z})
+    raise "Provision failed." if git_branch.empty?
+
+    {
+      type: type,
+      readonly: false,
+      git_url: git_url,
+      git_branch: git_branch,
+      app_identifier: bundle_ids,
+      platform: platform,
+      clone_branch_directly: true
+    }
+  end
 end
 
 default_platform(:ios)
@@ -247,5 +271,15 @@ platform :ios do
         UI.important("An existing build is already in beta review; the uploaded build remains available for the configured testers.")
       end
     end
+  end
+
+  # One-off onboarding for a new app: creates the certificate and profile that
+  # ci_build later consumes read-only, and commits them to the signing repository.
+  # The bundle identifier must already exist in the Developer Portal.
+  lane :ci_provision do |options|
+    api_key = app_store_connect_api_key(BlindBuilder.api_key_options)
+
+    setup_ci
+    match(BlindBuilder.provision_options(options).merge(api_key: api_key))
   end
 end

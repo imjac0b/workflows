@@ -206,11 +206,12 @@ run_lane() {
     local lane="$1"
     local label="$2"
     local log_path="$3"
+    shift 3
 
     if ! (cd "$WORKER_ROOT" && \
         BUNDLE_GEMFILE="$WORKER_ROOT/Gemfile" \
         BUNDLE_PATH="$BUNDLE_ROOT" \
-        bundle exec fastlane ios "$lane" "config:$IOS_CI_CONFIG") >"$log_path" 2>&1; then
+        bundle exec fastlane ios "$lane" "$@") >"$log_path" 2>&1; then
         printf '%s\n' "${label} log tail:"
         tail -n 160 "$log_path" || true
         fail "$label failed."
@@ -226,21 +227,53 @@ build() {
     assert_xcode_version
     run_prebuild
     install_dependencies
-    run_lane ci_build Build "$TEMP_ROOT/build.log"
+    run_lane ci_build Build "$TEMP_ROOT/build.log" "config:$IOS_CI_CONFIG"
 }
 
 publish() {
     require_command jq
     require_runtime_paths
     install_dependencies
-    run_lane ci_publish Publish "$TEMP_ROOT/publish.log"
+    run_lane ci_publish Publish "$TEMP_ROOT/publish.log" "config:$IOS_CI_CONFIG"
+}
+
+provision() {
+    require_command git
+
+    local bundle_ids="${IOS_CI_PROVISION_BUNDLE_IDS:-}"
+    local platform="${IOS_CI_PROVISION_PLATFORM:-ios}"
+    local profile_type="${IOS_CI_PROVISION_TYPE:-appstore}"
+    local git_url="${IOS_CI_PROVISION_GIT_URL:-}"
+    local git_branch="${IOS_CI_PROVISION_GIT_BRANCH:-main}"
+
+    [[ "$bundle_ids" =~ ^[A-Za-z0-9.-]+(,[A-Za-z0-9.-]+)*$ ]] || fail "Provision failed."
+    [[ "$platform" =~ ^(ios|tvos)$ ]] || fail "Provision failed."
+    [[ "$profile_type" =~ ^(appstore|adhoc|development)$ ]] || fail "Provision failed."
+    [[ "$git_url" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git$ ]] || fail "Provision failed."
+    [[ "$git_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Provision failed."
+    [[ -n "${GITHUB_PAT:-}" ]] || fail "Provision failed."
+    [[ -n "${MATCH_PASSWORD:-}" ]] || fail "Provision failed."
+
+    # match writes the new certificate and profile back to the signing repository,
+    # so this path needs push credentials and a commit identity the build path never uses.
+    configure_private_git "$GITHUB_PAT"
+    git config --file "$GIT_CONFIG_PATH" user.name "github-actions[bot]"
+    git config --file "$GIT_CONFIG_PATH" user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+    install_dependencies
+    run_lane ci_provision Provision "$TEMP_ROOT/provision.log" \
+        "bundle_ids:$bundle_ids" \
+        "platform:$platform" \
+        "type:$profile_type" \
+        "git_url:$git_url" \
+        "git_branch:$git_branch"
 }
 
 finalize() {
     rm -rf "$SOURCE_DIR" "$CONTROL_DIR" "$CONFIG_PATH" "$OUTPUT_DIR" \
         "$DERIVED_DATA_DIR" "$GIT_CONFIG_PATH" "$BUNDLE_ROOT" \
         "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log" \
-        "$TEMP_ROOT/build.log" "$TEMP_ROOT/publish.log" \
+        "$TEMP_ROOT/build.log" "$TEMP_ROOT/publish.log" "$TEMP_ROOT/provision.log" \
         "$TEMP_ROOT/control-fetch.log" "$TEMP_ROOT/source-fetch.log"
     printf '%s\n' 'Finalize completed.'
 }
@@ -254,6 +287,9 @@ case "${1:-}" in
         ;;
     publish)
         publish
+        ;;
+    provision)
+        provision
         ;;
     finalize)
         finalize
