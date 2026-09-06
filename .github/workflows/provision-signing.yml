@@ -1,41 +1,13 @@
 name: Provision signing
 
-run-name: Provision ${{ inputs.bundle_ids }}
+run-name: Provision ${{ github.run_id }}
 
+# What gets provisioned is carried by secrets rather than dispatch inputs, so no
+# identifier appears in the workflow file, the run name, or the run's parameters.
+# Set CI_PROVISION_BUNDLE_IDS before each onboarding run; the platform, profile
+# type and signing branch fall back to ios, appstore and main when left unset.
 on:
   workflow_dispatch:
-    inputs:
-      bundle_ids:
-        description: Comma-separated bundle identifiers to provision
-        required: true
-        type: string
-      platform:
-        description: Signing platform
-        required: true
-        default: ios
-        type: choice
-        options:
-          - ios
-          - tvos
-      type:
-        description: Profile type
-        required: true
-        default: appstore
-        type: choice
-        options:
-          - appstore
-          - adhoc
-          - development
-      git_url:
-        description: Signing repository
-        required: true
-        default: https://github.com/imjac0b/ios-signing.git
-        type: string
-      git_branch:
-        description: Signing repository branch
-        required: true
-        default: main
-        type: string
 
 permissions:
   contents: read
@@ -59,11 +31,11 @@ jobs:
 
       - name: Provision
         env:
-          IOS_CI_PROVISION_BUNDLE_IDS: ${{ inputs.bundle_ids }}
-          IOS_CI_PROVISION_PLATFORM: ${{ inputs.platform }}
-          IOS_CI_PROVISION_TYPE: ${{ inputs.type }}
-          IOS_CI_PROVISION_GIT_URL: ${{ inputs.git_url }}
-          IOS_CI_PROVISION_GIT_BRANCH: ${{ inputs.git_branch }}
+          IOS_CI_PROVISION_BUNDLE_IDS: ${{ secrets.CI_PROVISION_BUNDLE_IDS }}
+          IOS_CI_PROVISION_PLATFORM: ${{ secrets.CI_PROVISION_PLATFORM }}
+          IOS_CI_PROVISION_TYPE: ${{ secrets.CI_PROVISION_TYPE }}
+          IOS_CI_PROVISION_GIT_URL: ${{ secrets.CI_SIGNING_REPO_URL }}
+          IOS_CI_PROVISION_GIT_BRANCH: ${{ secrets.CI_SIGNING_BRANCH }}
           GITHUB_PAT: ${{ secrets.CI_GITHUB_PAT }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}

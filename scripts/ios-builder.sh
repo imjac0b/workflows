@@ -57,6 +57,21 @@ mask_config_values() {
     done
 }
 
+mask_provision_values() {
+    local value
+    local field
+    local -a fields
+
+    for value in "$@"; do
+        IFS=',' read -r -a fields <<< "$value"
+        for field in "${fields[@]}"; do
+            if [[ ${#field} -ge 3 ]]; then
+                printf '::add-mask::%s\n' "$field"
+            fi
+        done
+    done
+}
+
 write_runtime_environment() {
     {
         printf 'IOS_CI_CONFIG=%s\n' "$CONFIG_PATH"
@@ -253,6 +268,10 @@ provision() {
     [[ "$git_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Provision failed."
     [[ -n "${GITHUB_PAT:-}" ]] || fail "Provision failed."
     [[ -n "${MATCH_PASSWORD:-}" ]] || fail "Provision failed."
+
+    # Actions masks a secret only as a whole, so a comma-separated list leaves each
+    # identifier unmasked where match echoes it back one at a time.
+    mask_provision_values "$bundle_ids" "$git_url"
 
     # match writes the new certificate and profile back to the signing repository,
     # so this path needs push credentials and a commit identity the build path never uses.
