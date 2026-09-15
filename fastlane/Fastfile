@@ -48,6 +48,30 @@ module BlindBuilder
     ENV.fetch("IOS_CI_DERIVED_DATA")
   end
 
+  # Swift package checkouts sit beside derived data rather than inside it, so they survive a
+  # clean build: a job that insists on compiling from scratch still skips re-cloning and
+  # re-resolving every dependency. Empty when the worker could not claim a cache directory,
+  # in which case xcodebuild keeps the checkouts in derived data as it did before.
+  def cloned_source_packages_root
+    root = ENV.fetch("IOS_CI_CLONED_SOURCE_PACKAGES", "").to_s
+    root.empty? ? nil : root
+  end
+
+  def incremental_build?
+    ENV.fetch("IOS_CI_INCREMENTAL", "").to_s == "1"
+  end
+
+  # Carrying derived data between builds only buys anything if the build is allowed to reuse
+  # what is in it, so cleaning is off wherever the cache is live and on wherever it is not --
+  # an uncached directory is empty anyway. A job that wants the guarantees of a from-scratch
+  # build sets build.clean and gives the reuse up.
+  def clean_build?(config)
+    configured = config.fetch("build", {})["clean"]
+    return configured == true unless configured.nil?
+
+    !incremental_build?
+  end
+
   def project_settings(config, target)
     project = config.fetch("project")
     path = target["path"] || project.fetch("path")
@@ -276,8 +300,9 @@ module BlindBuilder
 
   def build_options(config, target, index, build_number)
     kind, path = project_settings(config, target)
-    target_output = File.join(output_root, format("target-%02d", index + 1))
-    target_derived_data = File.join(derived_data_root, format("target-%02d", index + 1))
+    slot = format("target-%02d", index + 1)
+    target_output = File.join(output_root, slot)
+    target_derived_data = File.join(derived_data_root, slot)
     FileUtils.mkdir_p(target_output)
     FileUtils.mkdir_p(target_derived_data)
 
@@ -307,11 +332,19 @@ module BlindBuilder
       output_directory: target_output,
       output_name: "build",
       derived_data_path: target_derived_data,
-      clean: true,
+      clean: clean_build?(config),
       destination: target_platform(target) == "appletvos" ? "generic/platform=tvOS" : "generic/platform=iOS",
       xcargs: xcargs.join(" ")
     }
     options[kind.to_sym] = path
+
+    packages_root = cloned_source_packages_root
+    if packages_root
+      target_packages = File.join(packages_root, slot)
+      FileUtils.mkdir_p(target_packages)
+      options[:cloned_source_packages_path] = target_packages
+    end
+
     options
   end
 
