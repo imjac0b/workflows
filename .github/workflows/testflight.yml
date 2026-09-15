@@ -30,6 +30,7 @@ jobs:
         run: xcodebuild -version
 
       - name: Prepare
+        id: prepare
         env:
           IOS_CI_JOB_ID: ${{ github.event.client_payload.job }}
           CI_CONTROL_REPO: ${{ secrets.CI_CONTROL_REPO }}
@@ -37,6 +38,27 @@ jobs:
           CI_CONTROL_JOBS_PATH: ${{ secrets.CI_CONTROL_JOBS_PATH }}
           GITHUB_PAT: ${{ secrets.CI_GITHUB_PAT }}
         run: bash scripts/ios-builder.sh prepare
+
+      # Which app a dispatch builds is only known once Prepare has read the queued job, so the
+      # key it hands out is the only thing that can name this cache. A build whose key came
+      # back empty -- caching switched off, or an unreadable job -- simply runs cold.
+      - name: Restore build cache
+        id: build_cache
+        if: steps.prepare.outputs.cache_key != ''
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/cache
+          key: ${{ steps.prepare.outputs.cache_key }}
+          restore-keys: ${{ steps.prepare.outputs.cache_prefix }}
+
+      - name: Restore gems
+        id: gem_cache
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/bundle
+          key: gems-${{ runner.os }}-${{ hashFiles('Gemfile.lock') }}
 
       - name: Build
         env:
@@ -57,6 +79,25 @@ jobs:
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
         run: bash scripts/ios-builder.sh publish
+
+      # Both saves must precede Finalize, which wipes what the job left in RUNNER_TEMP. A build
+      # that failed still compiled something worth carrying into the next attempt, so neither
+      # save is conditional on success -- only on there being something new to store.
+      - name: Save build cache
+        if: always() && steps.prepare.outputs.cache_key != '' && steps.build_cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/cache
+          key: ${{ steps.prepare.outputs.cache_key }}
+
+      - name: Save gems
+        if: always() && steps.gem_cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/bundle
+          key: gems-${{ runner.os }}-${{ hashFiles('Gemfile.lock') }}
 
       - name: Finalize
         if: always()

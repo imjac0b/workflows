@@ -12,21 +12,11 @@ readonly DERIVED_DATA_DIR="$TEMP_ROOT/derived-data"
 readonly GIT_CONFIG_PATH="$TEMP_ROOT/gitconfig"
 readonly BUNDLE_ROOT="$TEMP_ROOT/bundle"
 
-# Xcode only reuses compiled products that outlive the job, and the runner wipes RUNNER_TEMP
-# between jobs, so the caches live outside it. A worker that keeps its disk carries them from
-# one build to the next; anywhere else the directory simply starts empty and the build costs
-# what it costs today. Nothing here is ever uploaded: this repository is public, and the
-# products of a private source belong on the machine that compiled them.
-readonly CACHE_ROOT="${IOS_CI_CACHE_ROOT:-${HOME:-$TEMP_ROOT}/.cache/ios-ci-builder}"
-# Nothing can hold a cache lock for longer than the job timeout, so an older one was left
-# behind by a worker that is gone.
-readonly CACHE_LOCK_STALE_SECONDS=21600
-readonly CACHE_LOCK_WAIT_SECONDS=90
-
-# Set by install_dependencies, read by run_lane: the cached gem directory when there is one,
-# the throwaway job directory when there is not.
-bundle_install_path="$BUNDLE_ROOT"
-cache_lock_dirs=()
+# The worker is thrown away with the job, so nothing survives on disk: what carries a build's
+# products to the next build is the workflow, which restores this directory before the build
+# and saves it after. Everything cacheable lives under one root so the workflow needs one path
+# and one key, and finalize leaves it alone -- it is saved before finalize runs.
+readonly CACHE_ROOT="${IOS_CI_CACHE_ROOT:-$TEMP_ROOT/cache}"
 
 fail() {
     printf '%s\n' "${1:-Build failed.}" >&2
@@ -233,6 +223,7 @@ prepare() {
 
     chmod 700 "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
     write_runtime_environment
+    publish_cache_key
     printf '%s\n' 'Prepare completed.'
 }
 
@@ -242,8 +233,10 @@ prepare() {
 cache_disabled() {
     [[ "${IOS_CI_CACHE_DISABLED:-}" == "1" ]] && return 0
     command -v shasum >/dev/null 2>&1 || return 0
-    [[ -n "${IOS_CI_CONFIG:-}" && -f "${IOS_CI_CONFIG:-}" ]] || return 1
-    jq -e '.build.cache == false' "$IOS_CI_CONFIG" >/dev/null 2>&1
+    # CONFIG_PATH rather than IOS_CI_CONFIG: the two name the same file, but prepare asks this
+    # question before the runtime environment it writes has reached any process.
+    [[ -f "$CONFIG_PATH" ]] || return 1
+    jq -e '.build.cache == false' "$CONFIG_PATH" >/dev/null 2>&1
 }
 
 cache_digest() {
@@ -253,87 +246,49 @@ cache_digest() {
     printf '%s\n' "$value"
 }
 
-# BSD stat spells the modification time -f and GNU stat spells it -c, and GNU answers -f
-# with an unrelated filesystem field rather than an error, so the first form that yields a
-# timestamp wins instead of the first that merely exits zero.
-cache_entry_age() {
-    local modified
-
-    for modified in \
-        "$(stat -f %m "$1" 2>/dev/null || true)" \
-        "$(stat -c %Y "$1" 2>/dev/null || true)"; do
-        [[ "$modified" =~ ^[0-9]+$ ]] || continue
-        printf '%s\n' "$(( $(date +%s) - modified ))"
-        return 0
-    done
-
-    return 1
-}
-
-# Directories are shared between every build on this worker, so a second run that wants the
-# same one waits briefly rather than writing into it. Callers treat a refusal as "no cache"
-# and carry on, which keeps a busy directory from ever blocking a build.
-acquire_cache_lock() {
-    local lock="$1"
-    local waited=0
-    local age
-
-    while ! mkdir "$lock" 2>/dev/null; do
-        age="$(cache_entry_age "$lock" || true)"
-        if [[ "$age" =~ ^[0-9]+$ ]] && (( age > CACHE_LOCK_STALE_SECONDS )); then
-            rm -rf "$lock"
-            continue
-        fi
-        (( waited < CACHE_LOCK_WAIT_SECONDS )) || return 1
-        sleep 3
-        waited=$(( waited + 3 ))
-    done
-
-    cache_lock_dirs+=("$lock")
-}
-
-release_cache_locks() {
-    local lock
-
-    for lock in ${cache_lock_dirs[@]+"${cache_lock_dirs[@]}"}; do
-        rm -rf "$lock"
-    done
-    cache_lock_dirs=()
-}
-
-# Nothing else deletes these, so every build drops the entries no build has touched lately.
-# An entry in use is touched when it is claimed, which keeps it out of reach of this.
-prune_cache() {
-    local max_age_days="${IOS_CI_CACHE_MAX_AGE_DAYS:-14}"
-    local entry
-
-    [[ "$max_age_days" =~ ^[0-9]+$ ]] || return 0
-
-    while IFS= read -r entry; do
-        [[ -n "$entry" && -d "$entry" ]] || continue
-        [[ -d "$entry/.lock" ]] && continue
-        rm -rf "$entry"
-    done < <(find "$CACHE_ROOT" -mindepth 2 -maxdepth 2 -type d -mtime +"$max_age_days" 2>/dev/null || true)
-}
-
-# The directory is named after a digest of everything its contents depend on -- which source
-# repository, which project inside it, and the exact Xcode -- so an upgrade or a different app
-# starts a fresh directory instead of reusing products that no longer apply. The digest also
-# keeps the name of a private repository off this worker's disk.
-source_cache_dir() {
+# The key is a digest of everything the cached products depend on -- which source repository,
+# which project inside it, and the exact Xcode -- so an upgrade or a different app misses
+# rather than restoring products that no longer apply. It is also the only form this key could
+# take: cache keys are listed in this repository's Actions tab, which is public, and the name
+# of a private repository does not belong there.
+cache_key_prefix() {
     local repository
     local project_path
     local xcode_version
     local key
 
-    repository="$(jq -r '.source.repository // empty' "$IOS_CI_CONFIG")" || return 1
-    project_path="$(jq -r '.project.path // empty' "$IOS_CI_CONFIG")" || return 1
+    repository="$(jq -r '.source.repository // empty' "$CONFIG_PATH")" || return 1
+    project_path="$(jq -r '.project.path // empty' "$CONFIG_PATH")" || return 1
     [[ -n "$repository" && -n "$project_path" ]] || return 1
     xcode_version="$(xcodebuild -version 2>/dev/null | tr '\n' ' ')"
     [[ -n "$xcode_version" ]] || return 1
     key="$(cache_digest "$repository|$project_path|$xcode_version")" || return 1
 
-    printf '%s/source/%s\n' "$CACHE_ROOT" "$key"
+    printf 'xcode-%s-\n' "$key"
+}
+
+# The workflow cannot name the cache it wants: which app a dispatch builds is only known once
+# the queued job has been read. So prepare hands the key out here, and a build whose key could
+# not be worked out simply runs uncached.
+publish_cache_key() {
+    local prefix
+    local source_sha
+
+    [[ -n "${GITHUB_OUTPUT:-}" ]] || return 0
+    cache_disabled && return 0
+    prefix="$(cache_key_prefix)" || return 0
+    source_sha="$(jq -r '.source.sha // empty' "$CONFIG_PATH")" || return 0
+    [[ "$source_sha" =~ ^[0-9A-Fa-f]{7,64}$ ]] || return 0
+
+    # The workflow saves this path unconditionally once a key exists, and saving a path that
+    # is not there is an error, so a build that dies before it ever reaches the cache still
+    # leaves an empty directory behind for the save step to find.
+    mkdir -p "$CACHE_ROOT" 2>/dev/null || return 0
+
+    {
+        printf 'cache_prefix=%s\n' "$prefix"
+        printf 'cache_key=%s%s\n' "$prefix" "$source_sha"
+    } >> "$GITHUB_OUTPUT"
 }
 
 # Reads NUL separated paths and prints "<epoch>\t<path>" for each. BSD and GNU stat disagree
@@ -354,145 +309,114 @@ touch_stamp() {
 }
 
 # Xcode decides what to recompile from each file's size and modification time, and a clone
-# stamps every file with the moment it was written -- which on its own would leave a restored
-# derived data directory as dead weight, because every file looks new. git already hashed the
-# whole tree for the index, so a file whose blob is the one the last build compiled gets that
-# build's timestamp back and its object is reused. Anything git hashes differently keeps the
-# clone's timestamp and is rebuilt, which is what makes this safe: the content decides, never
-# the clock.
+# stamps every file with the moment it was written -- which on its own would leave restored
+# derived data as dead weight, because every file looks new. git has already hashed the whole
+# tree for the index, so a file whose blob is the one the last build compiled gets that build's
+# timestamp back and its object is reused. Anything git hashes differently keeps the clone's
+# time and is rebuilt: the content decides, never the clock.
+#
+# Every file is rewritten, not just the restored ones, because touch resolves to the second
+# while the build system records nanoseconds. Stamping the whole tree to whole seconds makes
+# the timestamps reproducible from one build to the next, which is what the comparison needs;
+# leaving the untouched files alone would cost a rebuild to settle each one.
 sync_source_mtimes() {
     local manifest="$1"
-    local current="$TEMP_ROOT/mtime-current.tsv"
+    local blobs="$TEMP_ROOT/mtime-blobs.tsv"
     local plan="$TEMP_ROOT/mtime-plan.tsv"
     local stamp
     local formatted
 
     command -v awk >/dev/null 2>&1 || return 0
+    rm -f "$blobs" "$plan"
 
     # core.quotePath=false keeps non-ASCII names -- localized resources, mostly -- readable
     # instead of escaped into something that matches nothing on disk.
-    rm -f "$current" "$plan"
     git -C "$SOURCE_DIR" -c core.quotePath=false ls-files -s 2>/dev/null \
         | awk -F'\t' 'NF == 2 { split($1, meta, " "); if (meta[2] != "") print meta[2] "\t" $2 }' \
-        > "$current" 2>/dev/null || true
-    [[ -s "$current" ]] || { rm -f "$current"; return 0; }
+        > "$blobs" 2>/dev/null || true
+    [[ -s "$blobs" ]] || { rm -f "$blobs"; return 0; }
 
-    if [[ -f "$manifest" ]]; then
-        awk -F'\t' -v manifest="$manifest" '
+    # Each file wants the timestamp the last build gave this exact content, or its own
+    # timestamp truncated to the second when the manifest has nothing to say about it.
+    cut -f2 "$blobs" | tr '\n' '\0' \
+        | (cd "$SOURCE_DIR" && stat_mtimes) \
+        | awk -F'\t' -v blobs="$blobs" -v manifest="$manifest" '
             BEGIN {
+                while ((getline line < blobs) > 0) {
+                    if (split(line, field, "\t") == 2) blob[field[2]] = field[1]
+                }
                 while ((getline line < manifest) > 0) {
                     if (split(line, field, "\t") == 3) recorded[field[1] "\t" field[3]] = field[2]
                 }
             }
-            { key = $1 "\t" $2; if (key in recorded) print recorded[key] "\t" $2 }
-        ' "$current" > "$plan" 2>/dev/null || true
+            NF == 2 && ($2 in blob) {
+                key = blob[$2] "\t" $2
+                print (key in recorded ? recorded[key] : $1) "\t" $2
+            }
+        ' > "$plan" 2>/dev/null || true
 
-        # Every file a clone wrote shares one timestamp, so restoring by group costs a handful
-        # of touch calls rather than one per file.
-        if [[ -s "$plan" ]]; then
-            while IFS= read -r stamp; do
-                formatted="$(touch_stamp "$stamp" || true)"
-                [[ -n "$formatted" ]] || continue
-                awk -F'\t' -v want="$stamp" '$1 == want { print $2 }' "$plan" \
-                    | tr '\n' '\0' \
-                    | (cd "$SOURCE_DIR" && xargs -0 touch -t "$formatted" 2>/dev/null) || true
-            done < <(cut -f1 "$plan" | sort -u)
-        fi
-    fi
+    if [[ -s "$plan" ]]; then
+        # Most of a tree shares a handful of timestamps, so stamping by group keeps this to a
+        # few touch calls rather than one per file.
+        while IFS= read -r stamp; do
+            formatted="$(touch_stamp "$stamp" || true)"
+            [[ -n "$formatted" ]] || continue
+            awk -F'\t' -v want="$stamp" '$1 == want { print $2 }' "$plan" \
+                | tr '\n' '\0' \
+                | (cd "$SOURCE_DIR" && xargs -0 touch -t "$formatted" 2>/dev/null) || true
+        done < <(cut -f1 "$plan" | sort -u)
 
-    # Record what this build is about to see, so the next clone has something to match against.
-    cut -f2 "$current" | tr '\n' '\0' \
-        | (cd "$SOURCE_DIR" && stat_mtimes) \
-        | awk -F'\t' -v current="$current" '
+        # The manifest records what was just stamped, which is what the next build compares
+        # against -- so it is written from the plan, never from a second look at the disk.
+        awk -F'\t' -v blobs="$blobs" '
             BEGIN {
-                while ((getline line < current) > 0) {
+                while ((getline line < blobs) > 0) {
                     if (split(line, field, "\t") == 2) blob[field[2]] = field[1]
                 }
             }
             NF == 2 && ($2 in blob) { print blob[$2] "\t" $1 "\t" $2 }
-        ' > "$manifest.next" 2>/dev/null || true
+        ' "$plan" > "$manifest.next" 2>/dev/null || true
 
-    if [[ -s "$manifest.next" ]]; then
-        mv "$manifest.next" "$manifest" 2>/dev/null || rm -f "$manifest.next"
-    else
-        rm -f "$manifest.next"
+        if [[ -s "$manifest.next" ]]; then
+            mv "$manifest.next" "$manifest" 2>/dev/null || rm -f "$manifest.next"
+        else
+            rm -f "$manifest.next"
+        fi
     fi
-    rm -f "$current" "$plan"
+
+    rm -f "$blobs" "$plan"
 }
 
-# Points the build at a derived data directory that outlives the job when one can be claimed.
-# Every failure path here leaves the RUNNER_TEMP directories prepare created, so the build
-# still runs -- it just pays full price, exactly as it did before there was a cache.
+# Points the build at whatever the workflow restored. Every failure path leaves the RUNNER_TEMP
+# directories prepare created, so the build still runs -- it just pays full price, exactly as
+# it did before there was a cache.
 setup_build_cache() {
-    local cache_dir
-
     cache_disabled && return 0
+    mkdir -p "$CACHE_ROOT/derived-data" "$CACHE_ROOT/spm" 2>/dev/null || return 0
+    sync_source_mtimes "$CACHE_ROOT/mtime.tsv"
 
-    cache_dir="$(source_cache_dir)" || return 0
-    mkdir -p "$cache_dir" 2>/dev/null || return 0
-    prune_cache
-
-    if ! acquire_cache_lock "$cache_dir/.lock"; then
-        printf '%s\n' 'Build cache busy; building without it.'
-        return 0
-    fi
-
-    mkdir -p "$cache_dir/derived-data" "$cache_dir/spm" 2>/dev/null || return 0
-    touch "$cache_dir" 2>/dev/null || true
-    sync_source_mtimes "$cache_dir/mtime.tsv"
-
-    export IOS_CI_DERIVED_DATA="$cache_dir/derived-data"
-    export IOS_CI_CLONED_SOURCE_PACKAGES="$cache_dir/spm"
+    export IOS_CI_DERIVED_DATA="$CACHE_ROOT/derived-data"
+    export IOS_CI_CLONED_SOURCE_PACKAGES="$CACHE_ROOT/spm"
     export IOS_CI_INCREMENTAL=1
     printf '%s\n' 'Build cache ready.'
 }
 
-# Fastlane is the same set of gems on every build, so installing it once per lockfile beats
-# installing it once per job. The path is keyed by the lockfile: a dependency bump lands in a
-# new directory rather than mutating the one older builds resolved against.
-bundle_cache_dir() {
-    local key
-
-    cache_disabled && return 1
-    [[ -f "$WORKER_ROOT/Gemfile.lock" ]] || return 1
-    key="$(cache_digest "$(cat "$WORKER_ROOT/Gemfile.lock")")" || return 1
-
-    printf '%s/bundle/%s\n' "$CACHE_ROOT" "$key"
-}
-
-bundle_ready() {
-    (cd "$WORKER_ROOT" && \
-        BUNDLE_GEMFILE="$WORKER_ROOT/Gemfile" \
-        BUNDLE_PATH="$bundle_install_path" \
-        bundle check >/dev/null 2>&1)
-}
-
+# BUNDLE_ROOT is restored by the workflow when a previous build's gems are still current, in
+# which case bundle check passes and there is nothing to install.
 install_dependencies() {
     require_command bundle
     [[ -f "$WORKER_ROOT/Gemfile" ]] || fail "Build failed."
 
-    local cached
-
-    if cached="$(bundle_cache_dir)" && mkdir -p "$cached" 2>/dev/null; then
-        bundle_install_path="$cached"
-        touch "$cached" 2>/dev/null || true
+    if (cd "$WORKER_ROOT" && \
+        BUNDLE_GEMFILE="$WORKER_ROOT/Gemfile" \
+        BUNDLE_PATH="$BUNDLE_ROOT" \
+        bundle check >/dev/null 2>&1); then
+        return
     fi
-
-    bundle_ready && return
-
-    # Two jobs unpacking gems into one directory would race, so the install is serialized.
-    # A worker that cannot take the lock installs into its own job directory instead of
-    # waiting out someone else's install.
-    if [[ "$bundle_install_path" != "$BUNDLE_ROOT" ]] \
-        && ! acquire_cache_lock "$bundle_install_path.lock"; then
-        bundle_install_path="$BUNDLE_ROOT"
-    fi
-
-    bundle_ready && return
 
     if ! (cd "$WORKER_ROOT" && \
         BUNDLE_GEMFILE="$WORKER_ROOT/Gemfile" \
-        BUNDLE_PATH="$bundle_install_path" \
+        BUNDLE_PATH="$BUNDLE_ROOT" \
         bundle install --jobs 4 --retry 3) >"$TEMP_ROOT/dependencies.log" 2>&1; then
         fail "Build failed."
     fi
@@ -530,7 +454,7 @@ run_lane() {
 
     if ! (cd "$WORKER_ROOT" && \
         BUNDLE_GEMFILE="$WORKER_ROOT/Gemfile" \
-        BUNDLE_PATH="$bundle_install_path" \
+        BUNDLE_PATH="$BUNDLE_ROOT" \
         bundle exec fastlane ios "$lane" "$@") >"$log_path" 2>&1; then
         printf '%s\n' "${label} log tail:"
         tail -n 160 "$log_path" || true
@@ -660,19 +584,17 @@ provision() {
         "git_branch:$git_branch"
 }
 
-# The caches under CACHE_ROOT are the one thing a build leaves behind on purpose; everything
-# a job put in RUNNER_TEMP, source included, goes.
+# CACHE_ROOT is deliberately absent here: the workflow saves it in the step before this one,
+# and everything else a job put in RUNNER_TEMP, source included, goes.
 finalize() {
     rm -rf "$SOURCE_DIR" "$CONTROL_DIR" "$CONFIG_PATH" "$CONFIG_PATH.next" "$OUTPUT_DIR" \
         "$DERIVED_DATA_DIR" "$GIT_CONFIG_PATH" "$BUNDLE_ROOT" \
         "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log" \
         "$TEMP_ROOT/build.log" "$TEMP_ROOT/publish.log" "$TEMP_ROOT/provision.log" \
         "$TEMP_ROOT/control-fetch.log" "$TEMP_ROOT/source-fetch.log" \
-        "$TEMP_ROOT/mtime-current.tsv" "$TEMP_ROOT/mtime-plan.tsv"
+        "$TEMP_ROOT/mtime-blobs.tsv" "$TEMP_ROOT/mtime-plan.tsv"
     printf '%s\n' 'Finalize completed.'
 }
-
-trap release_cache_locks EXIT
 
 case "${1:-}" in
     prepare)
