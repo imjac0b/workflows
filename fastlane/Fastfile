@@ -5,7 +5,29 @@ require "open3"
 require "shellwords"
 
 module BlindBuilder
+  # TestFlight rejects "What to Test" beyond 4000 characters, so the generated
+  # changelog is clamped with room to spare for the truncation notice.
+  CHANGELOG_LIMIT = 3800
+  CHANGELOG_MAX_ENTRIES = 100
+  CHANGELOG_FALLBACK_DEPTH = 10
+
   module_function
+
+  def ci_metadata(config)
+    metadata = config["ci"]
+    metadata.is_a?(Hash) ? metadata : {}
+  end
+
+  def pull_request?(config)
+    ci_metadata(config)["kind"].to_s == "pull_request"
+  end
+
+  def pull_request_number(config)
+    number = ci_metadata(config)["pull_request"].to_i
+    raise "Build configuration could not be loaded." unless number.positive?
+
+    number
+  end
 
   def load_config(options)
     path = options[:config] || options["config"] || ENV.fetch("IOS_CI_CONFIG")
@@ -96,6 +118,17 @@ module BlindBuilder
     version.to_s
   end
 
+  # Every build takes the next whole number above the newest TestFlight build, so the
+  # leading component always increases. Pull request builds append the pull request
+  # number, which keeps them unique, ordered above the release train they branched from,
+  # and recognisable at a glance in the TestFlight build list: 42 versus 42.17.
+  def build_number(config, latest)
+    next_number = latest.to_i + 1
+    return next_number.to_s unless pull_request?(config)
+
+    "#{next_number}.#{pull_request_number(config)}"
+  end
+
   def latest_build_number_options(config, target, api_key)
     {
       api_key: api_key,
@@ -120,22 +153,97 @@ module BlindBuilder
     }
   end
 
+  def git_capture(*arguments)
+    output, status = Open3.capture2("git", "-C", source_root, *arguments)
+    status.success? ? output : nil
+  end
+
+  # The worker fetches only the commit under build, then deepens the history far enough to
+  # reach the reference point recorded for this source: the previously published commit for a
+  # branch build, the base branch head for a pull request. The merge base of that reference and
+  # HEAD is where this build's commits start. Anything unresolvable falls back to recent history.
+  def changelog_base(config)
+    previous = ci_metadata(config)["previous_sha"].to_s
+    return nil if previous.empty?
+
+    base = git_capture("merge-base", previous, "HEAD").to_s.strip
+    return nil if base.empty?
+
+    base == git_capture("rev-parse", "HEAD").to_s.strip ? nil : base
+  end
+
+  def changelog_entries(config)
+    base = changelog_base(config)
+    arguments = ["log", "--no-merges", "--pretty=format:%s (%h)"]
+    arguments += base ? ["#{base}..HEAD"] : ["-#{CHANGELOG_FALLBACK_DEPTH}"]
+
+    output = git_capture(*arguments)
+    raise "Build configuration could not be loaded." if output.nil?
+
+    entries = output.lines.map(&:strip).reject(&:empty?).uniq
+    entries = git_capture("log", "-1", "--pretty=format:%s (%h)").to_s.lines.map(&:strip).reject(&:empty?) if entries.empty?
+    raise "Build configuration could not be loaded." if entries.empty?
+
+    entries
+  end
+
+  def changelog_heading(config)
+    return [] unless pull_request?(config)
+
+    heading = "Pull request ##{pull_request_number(config)}"
+    title = ci_metadata(config)["title"].to_s.strip
+    heading = "#{heading} — #{title}" unless title.empty?
+    [heading, ""]
+  end
+
+  def clamp_changelog(lines)
+    changelog = lines.join("\n")
+    return changelog if changelog.length <= CHANGELOG_LIMIT
+
+    notice = "…changelog truncated"
+    budget = CHANGELOG_LIMIT - notice.length - 1
+    kept = []
+    length = 0
+    lines.each do |line|
+      break if length + line.length + 1 > budget
+
+      kept << line
+      length += line.length + 1
+    end
+    (kept << notice).join("\n")
+  end
+
   def generated_changelog(config)
     configured = config.fetch("testflight", {})["changelog"]
     return configured.to_s unless configured.to_s.empty?
 
-    output, status = Open3.capture2("git", "-C", source_root, "log", "-10", "--pretty=format:%s")
-    raise "Build configuration could not be loaded." unless status.success?
+    entries = changelog_entries(config)
+    omitted = entries.length - CHANGELOG_MAX_ENTRIES
+    entries = entries.first(CHANGELOG_MAX_ENTRIES)
 
-    messages = output.lines.map(&:strip).reject(&:empty?)
-    raise "Build configuration could not be loaded." if messages.empty?
+    lines = changelog_heading(config)
+    lines += entries.map { |entry| "• #{entry}" }
+    lines << "…and #{omitted} more commits" if omitted.positive?
+    clamp_changelog(lines)
+  end
 
-    messages.map { |message| "• #{message}" }.join("\n")
+  # Pull request builds are verification builds: they reach internal testers as soon as
+  # processing finishes, without an Apple beta review round or mail to external groups.
+  def testflight_settings(config)
+    settings = config.fetch("testflight", {})
+    return settings unless pull_request?(config)
+
+    settings.merge(
+      "groups" => [],
+      "distribute_external" => false,
+      "notify_external_testers" => false,
+      "submit_beta_review" => false
+    )
   end
 
   def upload_options(config, target, api_key, ipa_path)
-    testflight = config.fetch("testflight", {})
-    groups = target["testflight_groups"] || testflight["groups"] || []
+    testflight = testflight_settings(config)
+    groups = pull_request?(config) ? [] : (target["testflight_groups"] || testflight["groups"] || [])
     groups = Array(groups).map(&:to_s).reject(&:empty?)
     distribute_external = testflight.fetch("distribute_external", true)
     skip_waiting = testflight.fetch("skip_waiting_for_build_processing", false)
@@ -249,7 +357,7 @@ platform :ios do
       Dir.chdir(BlindBuilder.source_root) do
         latest = latest_testflight_build_number(BlindBuilder.latest_build_number_options(config, target, api_key))
         match(BlindBuilder.signing_options(config, target, api_key))
-        build_app(BlindBuilder.build_options(config, target, index, latest.to_i + 1))
+        build_app(BlindBuilder.build_options(config, target, index, BlindBuilder.build_number(config, latest)))
       end
     end
   end

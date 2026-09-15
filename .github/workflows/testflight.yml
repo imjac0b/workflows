@@ -50,6 +50,8 @@ jobs:
       - name: Publish
         if: success()
         env:
+          CI_CONTROL_BRANCH: ${{ secrets.CI_CONTROL_BRANCH }}
+          CI_CONTROL_STATE_PATH: ${{ secrets.CI_CONTROL_STATE_PATH }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}

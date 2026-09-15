@@ -47,7 +47,8 @@ configure_private_git() {
 
 mask_config_values() {
     jq -r '
-        ..
+        del(.ci)
+        | ..
         | strings
         | select(length >= 3)
         | select(contains("\n") | not)
@@ -70,6 +71,40 @@ mask_provision_values() {
             fi
         done
     done
+}
+
+forget_changelog_reference() {
+    local scratch="$CONFIG_PATH.next"
+
+    jq 'del(.ci.previous_sha)' "$CONFIG_PATH" > "$scratch" || return 1
+    chmod 600 "$scratch"
+    mv "$scratch" "$CONFIG_PATH"
+}
+
+# The source is fetched at a single commit, so the commits a changelog should list are not
+# in the clone yet. Deepen the history until it reaches the reference point recorded for this
+# job -- the previously published commit for a branch build, the base branch head for a pull
+# request -- and drop the reference when it is unreachable, which leaves the changelog to fall
+# back to recent history instead of failing a build over it.
+resolve_changelog_history() {
+    local source_sha="$1"
+    local previous
+    local round
+
+    previous="$(jq -r '.ci.previous_sha // empty' "$CONFIG_PATH")" || return 1
+    [[ -n "$previous" ]] || return 0
+
+    if git -C "$SOURCE_DIR" fetch --quiet --no-tags --depth=1 origin "$previous" >/dev/null 2>&1; then
+        for round in 1 2 3 4; do
+            git -C "$SOURCE_DIR" merge-base "$previous" HEAD >/dev/null 2>&1 && return 0
+            [[ "$(git -C "$SOURCE_DIR" rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]] || break
+            git -C "$SOURCE_DIR" fetch --quiet --no-tags --deepen=250 origin "$source_sha" "$previous" \
+                >/dev/null 2>&1 || break
+        done
+        git -C "$SOURCE_DIR" merge-base "$previous" HEAD >/dev/null 2>&1 && return 0
+    fi
+
+    forget_changelog_reference
 }
 
 write_runtime_environment() {
@@ -133,6 +168,14 @@ prepare() {
         and (.project.targets | type == "array" and length > 0)
         and (.signing.git_url | type == "string" and length > 0)
         and (.testflight | type == "object")
+        and ((.ci // {}) | type == "object")
+        and (((.ci // {}).kind // "push") | test("^(push|pull_request)$"))
+        and (((.ci // {}).previous_sha // "0000000") | test("^[0-9A-Fa-f]{7,64}$"))
+        and (((.ci // {}).state_key // "queue") | test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))
+        and (((.ci // {}).state_key // "queue") | contains("..") | not)
+        and (if ((.ci // {}).kind // "push") == "pull_request"
+             then ((.ci // {}).pull_request | type == "number" and . > 0)
+             else true end)
     ' "$job_file" >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
 
     prepare_stage="runtime configuration"
@@ -168,6 +211,9 @@ prepare() {
         prepare_stage="Git LFS download"
         git -C "$SOURCE_DIR" lfs pull --quiet >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
     fi
+
+    prepare_stage="changelog history"
+    resolve_changelog_history "$source_sha" || fail "Prepare failed at ${prepare_stage}."
 
     chmod 700 "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
     write_runtime_environment
@@ -245,11 +291,77 @@ build() {
     run_lane ci_build Build "$TEMP_ROOT/build.log" "config:$IOS_CI_CONFIG"
 }
 
+# Branch builds carry a marker key; the commit they publish becomes the starting point of the
+# next changelog. Writing it here rather than at queue time means a build that never reached
+# TestFlight leaves its commits for the build that follows.
+record_build_state() {
+    local control_branch="${CI_CONTROL_BRANCH:-main}"
+    local state_path="${CI_CONTROL_STATE_PATH:-state}"
+    local state_key
+    local source_sha
+    local state_file
+    local existing
+    local existing_time
+    local source_time
+    local attempt
+
+    state_key="$(jq -r '.ci.state_key // empty' "$CONFIG_PATH")" || return 0
+    [[ -n "$state_key" ]] || return 0
+    [[ "$state_key" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 0
+    [[ "$state_key" != *..* ]] || return 0
+    [[ "$state_path" =~ ^[A-Za-z0-9._/-]+$ ]] || return 0
+    [[ "$state_path" != *..* ]] || return 0
+    [[ "$control_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || return 0
+    [[ -d "$CONTROL_DIR/.git" ]] || return 0
+    source_sha="$(jq -er '.source.sha' "$CONFIG_PATH")" || return 0
+    state_file="$state_path/$state_key.json"
+
+    for attempt in 1 2 3 4 5; do
+        git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >/dev/null 2>&1 || break
+        git -C "$CONTROL_DIR" checkout --quiet --force --detach FETCH_HEAD >/dev/null 2>&1 || break
+
+        if [[ -f "$CONTROL_DIR/$state_file" ]]; then
+            existing="$(jq -r '.sha // empty' "$CONTROL_DIR/$state_file" 2>/dev/null || true)"
+            [[ "$existing" != "$source_sha" ]] || return 0
+            # A slower build finishing after a newer one must not move the marker backwards.
+            # The clone is shallow in the direction of history it was fetched for, so it cannot
+            # answer whether the recorded commit descends from this one; the commit dates of the
+            # two objects are enough to order them, and a tie or a missing object still writes.
+            if [[ -n "$existing" ]]; then
+                git -C "$SOURCE_DIR" fetch --quiet --no-tags --depth=1 origin "$existing" >/dev/null 2>&1 || true
+                existing_time="$(git -C "$SOURCE_DIR" show -s --format=%ct "$existing" 2>/dev/null || true)"
+                source_time="$(git -C "$SOURCE_DIR" show -s --format=%ct "$source_sha" 2>/dev/null || true)"
+                if [[ "$existing_time" =~ ^[0-9]+$ && "$source_time" =~ ^[0-9]+$ ]] \
+                    && (( source_time < existing_time )); then
+                    return 0
+                fi
+            fi
+        fi
+
+        mkdir -p "$CONTROL_DIR/$state_path" || break
+        jq -n --arg sha "$source_sha" --arg updated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{sha: $sha, updated_at: $updated}' > "$CONTROL_DIR/$state_file" || break
+        git -C "$CONTROL_DIR" add -- "$state_file" >/dev/null 2>&1 || break
+        git -C "$CONTROL_DIR" diff --quiet --cached && return 0
+        git -C "$CONTROL_DIR" \
+            -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "Record published build" >/dev/null 2>&1 || break
+        git -C "$CONTROL_DIR" push -q origin "HEAD:$control_branch" >/dev/null 2>&1 && return 0
+    done
+
+    # The marker only shapes the next changelog; a build that already reached TestFlight
+    # must not be reported as failed because the marker could not be written.
+    printf '%s\n' 'Publish completed without recording the build marker.' >&2
+    return 0
+}
+
 publish() {
     require_command jq
     require_runtime_paths
     install_dependencies
     run_lane ci_publish Publish "$TEMP_ROOT/publish.log" "config:$IOS_CI_CONFIG"
+    record_build_state
 }
 
 provision() {
@@ -289,7 +401,7 @@ provision() {
 }
 
 finalize() {
-    rm -rf "$SOURCE_DIR" "$CONTROL_DIR" "$CONFIG_PATH" "$OUTPUT_DIR" \
+    rm -rf "$SOURCE_DIR" "$CONTROL_DIR" "$CONFIG_PATH" "$CONFIG_PATH.next" "$OUTPUT_DIR" \
         "$DERIVED_DATA_DIR" "$GIT_CONFIG_PATH" "$BUNDLE_ROOT" \
         "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log" \
         "$TEMP_ROOT/build.log" "$TEMP_ROOT/publish.log" "$TEMP_ROOT/provision.log" \
