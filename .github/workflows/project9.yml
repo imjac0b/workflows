@@ -32,6 +32,9 @@ jobs:
         run: bun run scrape > /dev/null
 
       - name: Build
+        env:
+          CONCURRENCY: "512"
+          PANEL_TIMEOUT_MS: "2500"
         run: bun run build > /dev/null
 
       - name: Commit and push changes
