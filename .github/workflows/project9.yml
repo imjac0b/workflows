@@ -29,10 +29,10 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Fetch
-        run: bun run scrape
+        run: bun run scrape > /dev/null
 
       - name: Build
-        run: bun run build
+        run: bun run build > /dev/null
 
       - name: Commit and push changes
         run: |
@@ -46,5 +46,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "chore: auto-update data"
-          git push
+          git commit -q -m "chore: auto-update data"
+          git push --quiet 2>/dev/null
