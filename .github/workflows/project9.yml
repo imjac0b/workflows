@@ -50,4 +50,7 @@ jobs:
           fi
 
           git commit -q -m "chore: auto-update data"
-          git push --quiet 2>/dev/null
+          # Push visibly; the repo name is a secret so Actions masks it in the
+          # log, and push output carries no file names. Retry once for a
+          # transient non-fast-forward.
+          git push || { git pull --rebase && git push; }
