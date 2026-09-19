@@ -358,6 +358,7 @@ module BlindBuilder
     type = options[:type].to_s
     git_url = options[:git_url].to_s
     git_branch = options[:git_branch].to_s
+    force = options[:force].to_s == "true"
 
     raise "Provision failed." if bundle_ids.empty?
     raise "Provision failed." unless %w[ios tvos].include?(platform)
@@ -368,6 +369,7 @@ module BlindBuilder
     {
       type: type,
       readonly: false,
+      force: force,
       git_url: git_url,
       git_branch: git_branch,
       app_identifier: bundle_ids,

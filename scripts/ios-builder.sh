@@ -556,12 +556,14 @@ provision() {
     local profile_type="${IOS_CI_PROVISION_TYPE:-appstore}"
     local git_url="${IOS_CI_PROVISION_GIT_URL:-}"
     local git_branch="${IOS_CI_PROVISION_GIT_BRANCH:-main}"
+    local force="${IOS_CI_PROVISION_FORCE:-false}"
 
     [[ "$bundle_ids" =~ ^[A-Za-z0-9.-]+(,[A-Za-z0-9.-]+)*$ ]] || fail "Provision failed."
     [[ "$platform" =~ ^(ios|tvos)$ ]] || fail "Provision failed."
     [[ "$profile_type" =~ ^(appstore|adhoc|development)$ ]] || fail "Provision failed."
     [[ "$git_url" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git$ ]] || fail "Provision failed."
     [[ "$git_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Provision failed."
+    [[ "$force" =~ ^(true|false)$ ]] || fail "Provision failed."
     [[ -n "${GITHUB_PAT:-}" ]] || fail "Provision failed."
     [[ -n "${MATCH_PASSWORD:-}" ]] || fail "Provision failed."
 
@@ -581,7 +583,8 @@ provision() {
         "platform:$platform" \
         "type:$profile_type" \
         "git_url:$git_url" \
-        "git_branch:$git_branch"
+        "git_branch:$git_branch" \
+        "force:$force"
 }
 
 # CACHE_ROOT is deliberately absent here: the workflow saves it in the step before this one,

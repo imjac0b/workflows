@@ -38,6 +38,11 @@ on:
         required: true
         default: main
         type: string
+      force:
+        description: Regenerate the profiles even if the signing repository already has them
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -61,7 +66,7 @@ jobs:
       - name: Hide inputs
         uses: levibostian/action-hide-sensitive-inputs@v1
         with:
-          exclude_inputs: platform,type,git_branch
+          exclude_inputs: platform,type,git_branch,force
 
       - name: Prepare worker
         uses: actions/checkout@v4
@@ -75,6 +80,7 @@ jobs:
           IOS_CI_PROVISION_TYPE: ${{ inputs.type }}
           IOS_CI_PROVISION_GIT_URL: ${{ inputs.git_url }}
           IOS_CI_PROVISION_GIT_BRANCH: ${{ inputs.git_branch }}
+          IOS_CI_PROVISION_FORCE: ${{ inputs.force }}
           GITHUB_PAT: ${{ secrets.CI_GITHUB_PAT }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
