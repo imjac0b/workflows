@@ -1,0 +1,58 @@
+name: Keepalive
+
+run-name: Keepalive ${{ github.run_id }}
+
+# TestFlight expires every build 90 days after upload. Once a day, any app whose last published
+# build is getting close to that is rebuilt from the same commit and queued through the regular
+# Build workflow, so testers keep a working build even when nothing new has been pushed.
+
+on:
+  schedule:
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+    inputs:
+      max_age_days:
+        description: Rebuild an app once its last published build is at least this many days old (1-89)
+        required: false
+        default: "80"
+      dry_run:
+        description: Only report how many apps are due, without queuing anything
+        type: boolean
+        required: false
+        default: false
+
+# contents: write is what sending a repository_dispatch to this repository takes.
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    name: Keepalive
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Prepare worker
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Queue refresh builds
+        env:
+          CI_CONTROL_REPO: ${{ secrets.CI_CONTROL_REPO }}
+          CI_CONTROL_BRANCH: ${{ secrets.CI_CONTROL_BRANCH }}
+          CI_CONTROL_JOBS_PATH: ${{ secrets.CI_CONTROL_JOBS_PATH }}
+          CI_CONTROL_STATE_PATH: ${{ secrets.CI_CONTROL_STATE_PATH }}
+          GITHUB_PAT: ${{ secrets.CI_GITHUB_PAT }}
+          DISPATCH_TOKEN: ${{ github.token }}
+          IOS_CI_KEEPALIVE_DAYS: ${{ inputs.max_age_days || '80' }}
+          IOS_CI_KEEPALIVE_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        run: bash scripts/ios-builder.sh keepalive
+
+      - name: Finalize
+        if: always()
+        run: bash scripts/ios-builder.sh finalize

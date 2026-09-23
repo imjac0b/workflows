@@ -175,7 +175,7 @@ prepare() {
         and (.signing.git_url | type == "string" and length > 0)
         and (.testflight | type == "object")
         and ((.ci // {}) | type == "object")
-        and (((.ci // {}).kind // "push") | test("^(push|pull_request)$"))
+        and (((.ci // {}).kind // "push") | test("^(push|pull_request|refresh)$"))
         and (((.ci // {}).previous_sha // "0000000") | test("^[0-9A-Fa-f]{7,64}$"))
         and (((.ci // {}).state_key // "queue") | test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))
         and (((.ci // {}).state_key // "queue") | contains("..") | not)
@@ -506,12 +506,13 @@ record_build_state() {
 
         if [[ -f "$CONTROL_DIR/$state_file" ]]; then
             existing="$(jq -r '.sha // empty' "$CONTROL_DIR/$state_file" 2>/dev/null || true)"
-            [[ "$existing" != "$source_sha" ]] || return 0
             # A slower build finishing after a newer one must not move the marker backwards.
             # The clone is shallow in the direction of history it was fetched for, so it cannot
             # answer whether the recorded commit descends from this one; the commit dates of the
             # two objects are enough to order them, and a tie or a missing object still writes.
-            if [[ -n "$existing" ]]; then
+            # A rebuild of the recorded commit still writes: updated_at is when testers last
+            # received a build, and keepalive reads it to tell when TestFlight will expire it.
+            if [[ -n "$existing" && "$existing" != "$source_sha" ]]; then
                 git -C "$SOURCE_DIR" fetch --quiet --no-tags --depth=1 origin "$existing" >/dev/null 2>&1 || true
                 existing_time="$(git -C "$SOURCE_DIR" show -s --format=%ct "$existing" 2>/dev/null || true)"
                 source_time="$(git -C "$SOURCE_DIR" show -s --format=%ct "$source_sha" 2>/dev/null || true)"
@@ -540,9 +541,38 @@ record_build_state() {
     return 0
 }
 
+# A refresh rebuilds a commit that already reached TestFlight, and its build number still lands
+# above everything uploaded so far. If a newer commit was published while it was queued or
+# building, uploading the refresh would hand testers the older code as the latest build, so the
+# upload is dropped. Anything that cannot be read leaves the refresh to publish as queued.
+refresh_superseded() {
+    local control_branch="${CI_CONTROL_BRANCH:-main}"
+    local state_path="${CI_CONTROL_STATE_PATH:-state}"
+    local state_key
+    local source_sha
+    local recorded
+
+    [[ "$(jq -r '.ci.kind // "push"' "$CONFIG_PATH" 2>/dev/null)" == "refresh" ]] || return 1
+    state_key="$(jq -r '.ci.state_key // empty' "$CONFIG_PATH")" || return 1
+    [[ "$state_key" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "$state_key" != *..* ]] || return 1
+    [[ "$state_path" =~ ^[A-Za-z0-9._/-]+$ && "$state_path" != *..* ]] || return 1
+    [[ "$control_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+    [[ -d "$CONTROL_DIR/.git" ]] || return 1
+    source_sha="$(jq -er '.source.sha' "$CONFIG_PATH")" || return 1
+
+    git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >/dev/null 2>&1 || return 1
+    git -C "$CONTROL_DIR" checkout --quiet --force --detach FETCH_HEAD >/dev/null 2>&1 || return 1
+    recorded="$(jq -r '.sha // empty' "$CONTROL_DIR/$state_path/$state_key.json" 2>/dev/null || true)"
+    [[ -n "$recorded" && "$recorded" != "$source_sha" ]]
+}
+
 publish() {
     require_command jq
     require_runtime_paths
+    if refresh_superseded; then
+        printf '%s\n' 'Publish skipped: a newer build reached TestFlight after this refresh was queued.'
+        return 0
+    fi
     install_dependencies
     run_lane ci_publish Publish "$TEMP_ROOT/publish.log" "config:$IOS_CI_CONFIG"
     record_build_state
@@ -587,6 +617,157 @@ provision() {
         "force:$force"
 }
 
+# Reads an ISO 8601 UTC timestamp -- the form record_build_state writes -- as epoch seconds.
+iso_epoch() {
+    date -u -d "$1" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null
+}
+
+new_job_id() {
+    local id
+    id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || true)"
+    id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+    [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || return 1
+    printf '%s\n' "$id"
+}
+
+# TestFlight expires a build 90 days after upload, so an app nobody has pushed to in that long
+# disappears from every tester's device. The state marker says when each branch last reached
+# TestFlight; once the newest one for an app is old enough, the job that published it is queued
+# again as a refresh -- same commit, same configuration, the next build number -- and the build
+# workflow is dispatched for it exactly as a push would. The job and state files are private,
+# and this runs in a public repository, so nothing here prints what it found.
+keepalive() {
+    require_command git
+    require_command jq
+    require_command curl
+
+    local control_repo="${CI_CONTROL_REPO:-}"
+    local control_branch="${CI_CONTROL_BRANCH:-main}"
+    local jobs_path="${CI_CONTROL_JOBS_PATH:-jobs}"
+    local state_path="${CI_CONTROL_STATE_PATH:-state}"
+    local max_age_days="${IOS_CI_KEEPALIVE_DAYS:-80}"
+    local dry_run="${IOS_CI_KEEPALIVE_DRY_RUN:-false}"
+    local index="$TEMP_ROOT/keepalive-jobs.tsv"
+    local candidates="$TEMP_ROOT/keepalive-candidates.tsv"
+    local queue_dir="$TEMP_ROOT/keepalive-queue"
+    local cutoff
+    local state_file
+    local state_key
+    local state_sha
+    local updated
+    local updated_epoch
+    local match
+    local app
+    local epoch
+    local job_path
+    local job_id
+    local short_sha
+    local attempt
+    local pushed=false
+    local -a queued=()
+
+    [[ "$control_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Keepalive failed."
+    [[ "$control_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Keepalive failed."
+    [[ "$jobs_path" =~ ^[A-Za-z0-9._/-]+$ && "$jobs_path" != *..* ]] || fail "Keepalive failed."
+    [[ "$state_path" =~ ^[A-Za-z0-9._/-]+$ && "$state_path" != *..* ]] || fail "Keepalive failed."
+    # Past 89 days the build being protected may already be gone by the time the refresh lands.
+    [[ "$max_age_days" =~ ^[0-9]+$ ]] && (( max_age_days >= 1 && max_age_days <= 89 )) || fail "Keepalive failed."
+    [[ "$dry_run" =~ ^(true|false)$ ]] || fail "Keepalive failed."
+    [[ -n "${GITHUB_PAT:-}" ]] || fail "Keepalive failed."
+    [[ "$dry_run" == "true" || -n "${DISPATCH_TOKEN:-}" ]] || fail "Keepalive failed."
+    [[ "$dry_run" == "true" || -n "${GITHUB_REPOSITORY:-}" ]] || fail "Keepalive failed."
+
+    configure_private_git "$GITHUB_PAT"
+    rm -rf "$CONTROL_DIR" "$queue_dir"
+    mkdir -p "$queue_dir" || fail "Keepalive failed."
+    git init -q "$CONTROL_DIR" || fail "Keepalive failed."
+    git -C "$CONTROL_DIR" remote add origin \
+        "https://x-access-token:${GITHUB_PAT}@github.com/${control_repo}.git" >/dev/null 2>&1 || fail "Keepalive failed."
+    # Full history: the order jobs were queued in is what picks the newest job for a commit.
+    git -C "$CONTROL_DIR" fetch --quiet --no-tags origin "$control_branch" >/dev/null 2>&1 || fail "Keepalive failed."
+    git -C "$CONTROL_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Keepalive failed."
+
+    # Every branch job, newest first, as "<state key>\t<sha>\t<app>\t<path>". A pull request
+    # build never writes a marker and only reaches internal testers, so it has nothing to refresh.
+    git -C "$CONTROL_DIR" log --format= --name-only --diff-filter=A -- "$jobs_path" 2>/dev/null \
+        | while IFS= read -r job_path; do
+            [[ "$job_path" == *.json && -f "$CONTROL_DIR/$job_path" ]] || continue
+            jq -r --arg path "$job_path" '
+                select(((.ci // {}).kind // "push") != "pull_request")
+                | select((.ci.state_key // "") != "" and (.source.sha // "") != "")
+                | [.ci.state_key, .source.sha, "\(.source.repository)|\(.project.path)", $path]
+                | @tsv
+            ' "$CONTROL_DIR/$job_path" 2>/dev/null || true
+        done > "$index"
+
+    # One line per published branch that can still be rebuilt: "<app>\t<epoch>\t<job path>".
+    : > "$candidates"
+    for state_file in "$CONTROL_DIR/$state_path"/*.json; do
+        [[ -f "$state_file" ]] || continue
+        state_key="$(basename "$state_file" .json)"
+        state_sha="$(jq -r '.sha // empty' "$state_file" 2>/dev/null || true)"
+        updated="$(jq -r '.updated_at // empty' "$state_file" 2>/dev/null || true)"
+        updated_epoch="$(iso_epoch "$updated" || true)"
+        [[ -n "$state_sha" && "$updated_epoch" =~ ^[0-9]+$ ]] || continue
+        match="$(awk -F'\t' -v key="$state_key" -v sha="$state_sha" \
+            '$1 == key && $2 == sha { print $3 "\t" $4; exit }' "$index")"
+        [[ -n "$match" ]] || continue
+        printf '%s\t%s\t%s\n' "${match%%$'\t'*}" "$updated_epoch" "${match#*$'\t'}" >> "$candidates"
+    done
+
+    # Testers of an app get whichever branch published last, so that is the only one to
+    # rebuild: refreshing an older branch would put its code above the newer one in TestFlight.
+    cutoff=$(( $(date -u +%s) - max_age_days * 86400 ))
+    while IFS=$'\t' read -r app epoch job_path; do
+        (( epoch <= cutoff )) || continue
+        job_id="$(new_job_id)" || fail "Keepalive failed."
+        short_sha="$(jq -r '.source.sha[0:12]' "$CONTROL_DIR/$job_path")" || fail "Keepalive failed."
+        jq --arg note "Automatic rebuild of ${short_sha} so this app stays available in TestFlight. Nothing has changed since the previous build." '
+            .ci = ((.ci // {}) | del(.previous_sha) | .kind = "refresh")
+            | .testflight = ((.testflight // {}) + {changelog: $note, notify_external_testers: false})
+            | .project.targets |= map(del(.changelog))
+        ' "$CONTROL_DIR/$job_path" > "$queue_dir/$job_id.json" || fail "Keepalive failed."
+        queued+=("$job_id")
+    done < <(sort -t $'\t' -k1,1 -k2,2nr "$candidates" | awk -F'\t' '!seen[$1]++')
+
+    printf 'Checked %s apps; %s due for a refresh.\n' \
+        "$(cut -f1 "$candidates" | sort -u | wc -l | tr -d ' ')" "${#queued[@]}"
+    (( ${#queued[@]} > 0 )) || return 0
+    if [[ "$dry_run" == "true" ]]; then
+        printf '%s\n' 'Dry run: nothing queued.'
+        return 0
+    fi
+
+    for attempt in 1 2 3 4 5; do
+        git -C "$CONTROL_DIR" fetch --quiet --no-tags origin "$control_branch" >/dev/null 2>&1 || continue
+        git -C "$CONTROL_DIR" checkout --quiet --force --detach FETCH_HEAD >/dev/null 2>&1 || continue
+        mkdir -p "$CONTROL_DIR/$jobs_path" || break
+        cp "$queue_dir"/*.json "$CONTROL_DIR/$jobs_path/" || break
+        git -C "$CONTROL_DIR" add -- "$jobs_path" >/dev/null 2>&1 || break
+        git -C "$CONTROL_DIR" \
+            -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "Queue build" >/dev/null 2>&1 || break
+        if git -C "$CONTROL_DIR" push -q origin "HEAD:$control_branch" >/dev/null 2>&1; then
+            pushed=true
+            break
+        fi
+    done
+    [[ "$pushed" == "true" ]] || fail "Keepalive failed."
+
+    # A repository_dispatch sent with the workflow's own token is one of the events that still
+    # starts a workflow run, so the build workflow picks these up like any other queued job.
+    for job_id in "${queued[@]}"; do
+        curl -fsS -o /dev/null -X POST \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/dispatches" \
+            -d "$(jq -cn --arg job "$job_id" '{event_type: "build", client_payload: {job: $job}}')" \
+            || fail "Keepalive failed."
+        printf 'Queued refresh build %s.\n' "$job_id"
+    done
+}
+
 # CACHE_ROOT is deliberately absent here: the workflow saves it in the step before this one,
 # and everything else a job put in RUNNER_TEMP, source included, goes.
 finalize() {
@@ -595,7 +776,8 @@ finalize() {
         "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log" \
         "$TEMP_ROOT/build.log" "$TEMP_ROOT/publish.log" "$TEMP_ROOT/provision.log" \
         "$TEMP_ROOT/control-fetch.log" "$TEMP_ROOT/source-fetch.log" \
-        "$TEMP_ROOT/mtime-blobs.tsv" "$TEMP_ROOT/mtime-plan.tsv"
+        "$TEMP_ROOT/mtime-blobs.tsv" "$TEMP_ROOT/mtime-plan.tsv" \
+        "$TEMP_ROOT/keepalive-jobs.tsv" "$TEMP_ROOT/keepalive-candidates.tsv" "$TEMP_ROOT/keepalive-queue"
     printf '%s\n' 'Finalize completed.'
 }
 
@@ -611,6 +793,9 @@ case "${1:-}" in
         ;;
     provision)
         provision
+        ;;
+    keepalive)
+        keepalive
         ;;
     finalize)
         finalize
