@@ -118,6 +118,7 @@ write_runtime_environment() {
         printf 'IOS_CI_CONFIG=%s\n' "$CONFIG_PATH"
         printf 'IOS_CI_SOURCE=%s\n' "$SOURCE_DIR"
         printf 'IOS_CI_OUTPUT=%s\n' "$OUTPUT_DIR"
+        printf 'IOS_CI_CONTROL=%s\n' "$CONTROL_DIR"
         printf 'IOS_CI_DERIVED_DATA=%s\n' "$DERIVED_DATA_DIR"
         printf 'GIT_CONFIG_GLOBAL=%s\n' "$GIT_CONFIG_PATH"
         printf 'GIT_CONFIG_NOSYSTEM=1\n'

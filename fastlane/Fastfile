@@ -2,6 +2,7 @@ require "base64"
 require "fileutils"
 require "json"
 require "open3"
+require "securerandom"
 require "shellwords"
 
 module BlindBuilder
@@ -10,6 +11,12 @@ module BlindBuilder
   CHANGELOG_LIMIT = 3800
   CHANGELOG_MAX_ENTRIES = 100
   CHANGELOG_FALLBACK_DEPTH = 10
+
+  # Where reserved build numbers live in the control repository, one file per app, platform
+  # and marketing version. It sits outside the state directory, whose files keepalive reads
+  # as published-branch markers.
+  BUILD_NUMBER_PATH = "build-numbers"
+  BUILD_NUMBER_ATTEMPTS = 10
 
   module_function
 
@@ -146,11 +153,65 @@ module BlindBuilder
   # leading component always increases. Pull request builds append the pull request
   # number, which keeps them unique, ordered above the release train they branched from,
   # and recognisable at a glance in the TestFlight build list: 42 versus 42.17.
-  def build_number(config, latest)
-    next_number = latest.to_i + 1
-    return next_number.to_s unless pull_request?(config)
+  # The whole number is the one reserved by reserve_build_number, never one read straight
+  # from TestFlight, so builds that run side by side cannot end up with the same value.
+  def build_number(config, number)
+    return number.to_s unless pull_request?(config)
 
-    "#{next_number}.#{pull_request_number(config)}"
+    "#{number}.#{pull_request_number(config)}"
+  end
+
+  def build_number_key(config, target)
+    parts = [target_platform(target),
+             target.fetch("app_identifier", target_bundle_ids(target).first),
+             marketing_version(config, target)]
+    parts.map { |part| part.to_s.gsub(/[^A-Za-z0-9._-]/, "_") }.join("-")
+  end
+
+  def control_git(*arguments)
+    _output, status = Open3.capture2e("git", "-C", ENV.fetch("IOS_CI_CONTROL"), *arguments)
+    status.success?
+  end
+
+  # TestFlight only learns of a build number once its upload finishes, so two builds that
+  # start close together both see the same "latest" and both claim latest + 1; the second
+  # upload is then rejected as a duplicate. The control repository is the one place every
+  # worker already shares, so the number is claimed there first: a push is only accepted
+  # when it fast-forwards, which means a concurrent claim makes this push fail, and the loser
+  # refetches, sees the winner's number and takes the one above it. A number claimed by a build
+  # that later fails is simply skipped.
+  def reserve_build_number(config, target, latest)
+    branch = ENV.fetch("CI_CONTROL_BRANCH", "main")
+    file = File.join(BUILD_NUMBER_PATH, "#{build_number_key(config, target)}.json")
+    path = File.join(ENV.fetch("IOS_CI_CONTROL"), file)
+
+    BUILD_NUMBER_ATTEMPTS.times do |attempt|
+      sleep(rand * 2) if attempt.positive?
+      next unless control_git("fetch", "--quiet", "--no-tags", "--depth=1", "origin", branch)
+      next unless control_git("checkout", "--quiet", "--force", "--detach", "FETCH_HEAD")
+
+      reserved = begin
+        File.file?(path) ? JSON.parse(File.read(path))["build"].to_i : 0
+      rescue JSON::ParserError
+        0
+      end
+      number = [latest.to_i, reserved].max + 1
+
+      # The claim carries a nonce: two workers that pick the same number in the same second
+      # would otherwise create byte-identical commits, and the second push would count as
+      # already up to date and succeed instead of losing the race.
+      claim = { "build" => number, "run" => ENV.fetch("GITHUB_RUN_ID", ""), "nonce" => SecureRandom.hex(8),
+                "reserved_at" => Time.now.utc.strftime("%Y-%m-%dT%H:%M:%SZ") }
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "#{JSON.generate(claim)}\n")
+      next unless control_git("add", "--", file)
+      next unless control_git("-c", "user.name=github-actions[bot]",
+                              "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+                              "commit", "--quiet", "-m", "Reserve build number")
+      return number if control_git("push", "--quiet", "origin", "HEAD:#{branch}")
+    end
+
+    raise "Build number could not be reserved."
   end
 
   def latest_build_number_options(config, target, api_key)
@@ -391,8 +452,9 @@ platform :ios do
     targets.each_with_index do |target, index|
       Dir.chdir(BlindBuilder.source_root) do
         latest = latest_testflight_build_number(BlindBuilder.latest_build_number_options(config, target, api_key))
+        number = BlindBuilder.reserve_build_number(config, target, latest)
         match(BlindBuilder.signing_options(config, target, api_key))
-        build_app(BlindBuilder.build_options(config, target, index, BlindBuilder.build_number(config, latest)))
+        build_app(BlindBuilder.build_options(config, target, index, BlindBuilder.build_number(config, number)))
       end
     end
   end

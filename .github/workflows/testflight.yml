@@ -62,6 +62,7 @@ jobs:
 
       - name: Build
         env:
+          CI_CONTROL_BRANCH: ${{ secrets.CI_CONTROL_BRANCH }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
