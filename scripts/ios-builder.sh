@@ -453,7 +453,10 @@ run_lane() {
     local log_path="$3"
     shift 3
 
+    # fastlane prints its update notice, release notes included, after a lane fails, which
+    # would fill the whole tail below and push the actual error out of it.
     if ! (cd "$WORKER_ROOT" && \
+        FASTLANE_SKIP_UPDATE_CHECK=1 \
         BUNDLE_GEMFILE="$WORKER_ROOT/Gemfile" \
         BUNDLE_PATH="$BUNDLE_ROOT" \
         bundle exec fastlane ios "$lane" "$@") >"$log_path" 2>&1; then
