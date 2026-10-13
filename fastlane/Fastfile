@@ -388,7 +388,7 @@ module BlindBuilder
     options = {
       scheme: target.fetch("scheme"),
       configuration: build_configuration(config, target),
-      sdk: target.fetch("sdk"),
+      sdk: target["sdk"],
       export_method: target.fetch("export_method", "app-store"),
       output_directory: target_output,
       output_name: "build",
