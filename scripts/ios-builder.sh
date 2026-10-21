@@ -447,6 +447,77 @@ run_prebuild() {
     fi
 }
 
+# The public run log only shows a masked tail, and fastlane keeps xcodebuild's own output --
+# where compiler errors are -- in a separate log on the worker, which finalize deletes. A failed
+# lane copies both into the private control repository under logs/<job>, with the error lines
+# gathered into errors.txt, so a failure can be read without exposing source in the public run.
+# Credentials the step holds are scrubbed first. Recording is best effort and never changes the
+# outcome of the build.
+record_failure_logs() {
+    local lane_log="$1"
+    local job_id="${IOS_CI_JOB_ID:-}"
+    local control_branch="${CI_CONTROL_BRANCH:-main}"
+    local logs_path="${CI_CONTROL_LOGS_PATH:-logs}"
+    local directory
+    local destination
+    local log
+    local attempt
+
+    [[ "$job_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]] || return 0
+    [[ "$logs_path" =~ ^[A-Za-z0-9._/-]+$ ]] || return 0
+    [[ "$logs_path" != *..* ]] || return 0
+    [[ "$control_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || return 0
+    [[ -d "$CONTROL_DIR/.git" ]] || return 0
+    directory="$logs_path/$job_id"
+
+    for attempt in 1 2 3 4 5; do
+        git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >/dev/null 2>&1 || break
+        git -C "$CONTROL_DIR" checkout --quiet --force --detach FETCH_HEAD >/dev/null 2>&1 || break
+
+        destination="$CONTROL_DIR/$directory"
+        rm -rf "$destination"
+        mkdir -p "$destination" || break
+        if [[ -f "$lane_log" ]]; then
+            cp "$lane_log" "$destination/fastlane.log" || break
+        fi
+        for log in "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log"; do
+            if [[ -s "$log" ]]; then
+                cp "$log" "$destination/$(basename "$log")" || break 2
+            fi
+        done
+        for log in "$HOME"/Library/Logs/gym/*.log; do
+            [[ -f "$log" ]] || continue
+            # GitHub refuses files over 100 MB; the end of the log is where a failure is.
+            tail -c 50000000 "$log" > "$destination/xcodebuild.log"
+        done
+        if [[ -f "$destination/xcodebuild.log" ]]; then
+            grep -n -B 2 -A 6 -E '(^|[^A-Za-z])(error|fatal error): ' "$destination/xcodebuild.log" \
+                > "$destination/errors.txt" 2>/dev/null || true
+        fi
+        perl -pi -e '
+            s#(https://x-access-token:)[^@\s]+@#$1***@#g;
+            for my $name (qw(GITHUB_PAT MATCH_PASSWORD ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY_BASE64)) {
+                my $value = $ENV{$name};
+                s/\Q$value\E/***/g if defined $value && length($value) >= 4;
+            }
+        ' "$destination"/* >/dev/null 2>&1 || break
+
+        git -C "$CONTROL_DIR" add -- "$directory" >/dev/null 2>&1 || break
+        git -C "$CONTROL_DIR" diff --quiet --cached && return 0
+        git -C "$CONTROL_DIR" \
+            -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "Record failed build logs" >/dev/null 2>&1 || break
+        if git -C "$CONTROL_DIR" push -q origin "HEAD:$control_branch" >/dev/null 2>&1; then
+            printf '%s\n' "Logs recorded in the control repository under ${logs_path}/${job_id}."
+            return 0
+        fi
+    done
+
+    printf '%s\n' 'Logs could not be recorded in the control repository.' >&2
+    return 0
+}
+
 run_lane() {
     local lane="$1"
     local label="$2"
@@ -462,6 +533,7 @@ run_lane() {
         bundle exec fastlane ios "$lane" "$@") >"$log_path" 2>&1; then
         printf '%s\n' "${label} log tail:"
         tail -n 160 "$log_path" || true
+        record_failure_logs "$log_path"
         fail "$label failed."
     fi
 
