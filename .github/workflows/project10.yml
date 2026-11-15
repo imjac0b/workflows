@@ -5,7 +5,9 @@ on:
     # Always keep a successor queued while a run is active (see concurrency below): each run lasts ~5h45m,
     # so an extra run queued every 2 hours replaces the previous pending one and starts the moment the
     # active run ends. This is what keeps the monitor running 24/7.
-    - cron: '17 */2 * * *'
+    # (UTC) Only during opening hours: 00:05-16:05 UTC = 08:05-00:05 Hong Kong time. Outside the window
+    # nothing is queued, and a run that starts after closing time exits immediately.
+    - cron: '5 0-16/2 * * *'
   workflow_dispatch:
     inputs:
       minutes:
