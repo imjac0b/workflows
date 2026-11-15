@@ -2,7 +2,10 @@ name: Project 10
 
 on:
   schedule:
-    - cron: '17 */6 * * *'
+    # Always keep a successor queued while a run is active (see concurrency below): each run lasts ~5h45m,
+    # so an extra run queued every 2 hours replaces the previous pending one and starts the moment the
+    # active run ends. This is what keeps the monitor running 24/7.
+    - cron: '17 */2 * * *'
   workflow_dispatch:
     inputs:
       minutes:
@@ -18,7 +21,7 @@ on:
         default: false
 
 # Each run lasts almost 6h, so a new one must wait for the previous one
-# instead of cancelling it.
+# instead of cancelling it. Only one run can be pending: a newer one replaces it.
 concurrency:
   group: "project-10"
   cancel-in-progress: false
@@ -57,8 +60,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/state
-          key: project-10-state-${{ github.run_id }}
-          restore-keys: project-10-state-
+          key: project-10-s2-${{ github.run_id }}
+          restore-keys: project-10-s2-
 
       - name: Run
         env:
@@ -79,7 +82,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/state
-          key: project-10-state-${{ github.run_id }}
+          key: project-10-s2-${{ github.run_id }}
 
       - name: Upload output
         if: always() && inputs.debug
