@@ -65,7 +65,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.PROJECT_10_WEBHOOK }}
           YT_COOKIES: ${{ secrets.PROJECT_10_COOKIES }}
           RUN_MINUTES: ${{ inputs.minutes || '345' }}
-          QUIET: ${{ inputs.verbose && '' || '1' }}
+          QUIET: ${{ inputs.verbose && '0' || '1' }}
           DEBUG_DIR: ${{ inputs.debug && format('{0}/debug', runner.temp) || '' }}
         run: |
           if [ -n "$YT_COOKIES" ]; then
