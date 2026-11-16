@@ -68,6 +68,7 @@ jobs:
       - name: Run
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.PROJECT_10_WEBHOOK }}
+          DISCORD_ASSETS_WEBHOOK_URL: ${{ secrets.PROJECT_10_ASSETS_WEBHOOK }}
           YT_COOKIES: ${{ secrets.PROJECT_10_COOKIES }}
           RUN_MINUTES: ${{ inputs.minutes || '345' }}
           QUIET: ${{ inputs.verbose && '0' || '1' }}
