@@ -4,13 +4,16 @@ set -euo pipefail
 
 readonly WORKER_ROOT="${GITHUB_WORKSPACE:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 readonly TEMP_ROOT="${RUNNER_TEMP:?RUNNER_TEMP is required}"
-readonly CONTROL_DIR="$TEMP_ROOT/control"
 readonly SOURCE_DIR="$TEMP_ROOT/src"
 readonly CONFIG_PATH="$TEMP_ROOT/config.json"
 readonly OUTPUT_DIR="$TEMP_ROOT/output"
 readonly DERIVED_DATA_DIR="$TEMP_ROOT/derived-data"
 readonly GIT_CONFIG_PATH="$TEMP_ROOT/gitconfig"
 readonly BUNDLE_ROOT="$TEMP_ROOT/bundle"
+readonly CLONE_TOKEN_PATH="$TEMP_ROOT/clone-token"
+readonly LOGS_FLAG_PATH="$TEMP_ROOT/logs-enabled"
+readonly CLAIMED_BUILD_PATH="$TEMP_ROOT/claimed-build"
+readonly FAILURE_DIR="$TEMP_ROOT/failure-logs"
 
 # The worker is thrown away with the job, so nothing survives on disk: what carries a build's
 # products to the next build is the workflow, which restores this directory before the build
@@ -49,6 +52,136 @@ configure_private_git() {
         "url.https://x-access-token:${token}@github.com/.insteadOf" \
         "git@github.com:"
     export GIT_CONFIG_GLOBAL="$GIT_CONFIG_PATH"
+}
+
+# The queue service that hands out jobs and records their results lives behind an address
+# kept in secrets, and nothing here names it. A request carries the OIDC token the workflow can
+# ask Actions for, so no credential for the service is stored on the worker either. Errors are
+# reported without the address, which Actions would otherwise print as part of a curl failure.
+backend_ready() {
+    [[ -n "${CI_BACKEND_URL:-}" && -n "${CI_BACKEND_AUDIENCE:-}" ]] || return 1
+    [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" && -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]] || return 1
+    [[ "${IOS_CI_JOB_ID:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]]
+}
+
+# Actions masks a secret only as a whole, so the host and the audience on their own would still
+# print. Run once per step, never inside a command whose output is captured.
+backend_mask() {
+    local host="${CI_BACKEND_URL#*://}"
+    printf '::add-mask::%s\n' "${host%%/*}" "$CI_BACKEND_AUDIENCE"
+}
+
+backend_token() {
+    local audience
+    audience="$(jq -rn --arg value "$CI_BACKEND_AUDIENCE" '$value | @uri')" || return 1
+    curl -fsS --retry 3 --retry-delay 2 \
+        -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+        "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}" 2>/dev/null | jq -er '.value'
+}
+
+# backend METHOD PATH [FILE [CONTENT_TYPE]]: sends FILE as the body and prints the response.
+# Fails on anything but a 2xx answer, saying only the status.
+backend() {
+    local method="$1"
+    local path="$2"
+    local data="${3:-}"
+    local content_type="${4:-application/json}"
+    local token
+    local headers="$TEMP_ROOT/backend-headers"
+    local response="$TEMP_ROOT/backend-response"
+    local status
+    local -a args=(-sS --retry 3 --retry-delay 2 -o "$response" -w '%{http_code}' -X "$method" -H "@$headers")
+
+    token="$(backend_token)" || { printf '%s\n' 'Queue service: could not get a token.' >&2; return 1; }
+    printf '::add-mask::%s\n' "$token" >&2
+    (umask 077; printf 'Authorization: Bearer %s\n' "$token" > "$headers")
+    if [[ -n "$data" ]]; then
+        args+=(-H "Content-Type: ${content_type}" --data-binary "@${data}")
+    fi
+
+    status="$(curl "${args[@]}" "${CI_BACKEND_URL%/}${path}" 2>/dev/null)" || status="000"
+    rm -f "$headers"
+    cat "$response" 2>/dev/null || true
+    rm -f "$response"
+    if [[ ! "$status" =~ ^2 ]]; then
+        printf 'Queue service answered %s.\n' "$status" >&2
+        return 1
+    fi
+}
+
+# The clone token expires after an hour and a build can take three, so it is rewritten into the
+# git configuration before each step that fetches repositories.
+store_clone_token() {
+    (umask 077; printf '%s' "$1" > "$CLONE_TOKEN_PATH")
+}
+
+refresh_clone_token() {
+    local token
+    token="$(backend POST "/runner/jobs/${IOS_CI_JOB_ID}/token" | jq -er '.token')" || return 1
+    printf '::add-mask::%s\n' "$token"
+    store_clone_token "$token"
+    configure_private_git "$token"
+}
+
+scrub_tokens() {
+    local token=""
+    [[ -f "$CLONE_TOKEN_PATH" ]] && token="$(cat "$CLONE_TOKEN_PATH")"
+    IOS_CI_SCRUB_TOKEN="$token" perl -pe '
+        s#(https://x-access-token:)[^@\s]+@#$1***@#g;
+        for my $name (qw(IOS_CI_SCRUB_TOKEN MATCH_PASSWORD ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY_BASE64)) {
+            my $value = $ENV{$name};
+            s/\Q$value\E/***/g if defined $value && length($value) >= 4;
+        }
+    '
+}
+
+# report_result RESULT DESCRIPTION [ERRORS_FILE]: the final word on this build. The service
+# ignores a second report for a build it already closed.
+report_result() {
+    local result="$1"
+    local description="${2:-}"
+    local errors="${3:-}"
+    local body="$TEMP_ROOT/report.json"
+    local number=""
+    local -a args=(--arg result "$result" --arg description "$description")
+
+    if [[ -f "$CLAIMED_BUILD_PATH" ]]; then
+        number="$(cat "$CLAIMED_BUILD_PATH")"
+        [[ "$number" =~ ^[0-9]+$ ]] && args+=(--argjson build_number "$number")
+    fi
+    [[ -n "$errors" && -s "$errors" ]] && args+=(--rawfile errors "$errors")
+
+    jq -n "${args[@]}" '
+        {result: $result}
+        + (if $description != "" then {description: $description} else {} end)
+        + (if $ARGS.named | has("build_number") then {build_number: $ARGS.named.build_number} else {} end)
+        + (if $ARGS.named | has("errors") then {errors: $ARGS.named.errors} else {} end)
+    ' > "$body" || return 1
+    backend POST "/runner/jobs/${IOS_CI_JOB_ID}/finish" "$body" >/dev/null || return 1
+    rm -f "$body"
+}
+
+# Called by the build lane for each target: one above both TestFlight's newest build and every
+# number the service already handed out, so builds that start together cannot collide. Prints
+# only the number; the lane reads it from standard output.
+claim_build_number() {
+    local key="${1:-}"
+    local latest="${2:-}"
+    local body="$TEMP_ROOT/claim.json"
+    local number
+
+    [[ "$key" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || fail "Build number could not be reserved."
+    [[ "$latest" =~ ^[0-9]+$ ]] || fail "Build number could not be reserved."
+    backend_ready || fail "Build number could not be reserved."
+
+    jq -n --arg key "$key" --argjson latest "$latest" '{key: $key, latest: $latest}' > "$body" \
+        || fail "Build number could not be reserved."
+    number="$(backend POST "/runner/jobs/${IOS_CI_JOB_ID}/build-number" "$body" | jq -er '.build')" \
+        || fail "Build number could not be reserved."
+    rm -f "$body"
+    [[ "$number" =~ ^[0-9]+$ ]] || fail "Build number could not be reserved."
+    printf '%s' "$number" > "$CLAIMED_BUILD_PATH"
+    printf '%s\n' "$number"
 }
 
 mask_config_values() {
@@ -118,7 +251,6 @@ write_runtime_environment() {
         printf 'IOS_CI_CONFIG=%s\n' "$CONFIG_PATH"
         printf 'IOS_CI_SOURCE=%s\n' "$SOURCE_DIR"
         printf 'IOS_CI_OUTPUT=%s\n' "$OUTPUT_DIR"
-        printf 'IOS_CI_CONTROL=%s\n' "$CONTROL_DIR"
         printf 'IOS_CI_DERIVED_DATA=%s\n' "$DERIVED_DATA_DIR"
         printf 'GIT_CONFIG_GLOBAL=%s\n' "$GIT_CONFIG_PATH"
         printf 'GIT_CONFIG_NOSYSTEM=1\n'
@@ -129,45 +261,41 @@ write_runtime_environment() {
 prepare() {
     require_command git
     require_command jq
+    require_command curl
 
     local job_id="${IOS_CI_JOB_ID:-}"
-    local control_repo="${CI_CONTROL_REPO:-}"
-    local control_branch="${CI_CONTROL_BRANCH:-main}"
-    local jobs_path="${CI_CONTROL_JOBS_PATH:-jobs}"
-    local control_url
-    local job_file
+    local token
     local source_repo
     local source_sha
     local prepare_stage="input validation"
 
     [[ "$job_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]] || fail "Prepare failed at ${prepare_stage}."
-    [[ "$control_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Prepare failed at ${prepare_stage}."
-    [[ "$control_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Prepare failed at ${prepare_stage}."
-    [[ "$jobs_path" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Prepare failed at ${prepare_stage}."
-    [[ "$jobs_path" != *..* ]] || fail "Prepare failed at ${prepare_stage}."
-    [[ -n "${GITHUB_PAT:-}" ]] || fail "Prepare failed at ${prepare_stage}."
+    backend_ready || fail "Prepare failed at ${prepare_stage}."
+    backend_mask
 
-    configure_private_git "$GITHUB_PAT"
-    control_url="https://x-access-token:${GITHUB_PAT}@github.com/${control_repo}.git"
+    prepare_stage="workspace"
+    rm -rf "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR" "$FAILURE_DIR" \
+        "$CLONE_TOKEN_PATH" "$LOGS_FLAG_PATH" "$CLAIMED_BUILD_PATH"
+    mkdir -p "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR" || fail "Prepare failed at ${prepare_stage}."
 
-    prepare_stage="control workspace"
-    rm -rf "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
-    mkdir -p "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR" || fail "Prepare failed at ${prepare_stage}."
+    # The first request also tells the service this job has started. It answers with the job
+    # file and a short-lived token that can read the source and signing repositories.
+    prepare_stage="job lookup"
+    backend GET "/runner/jobs/$job_id" > "$TEMP_ROOT/job.json" || fail "Prepare failed at ${prepare_stage}."
+    jq -e '(.config | type == "object") and (.token | type == "string" and length > 0)' \
+        "$TEMP_ROOT/job.json" >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
 
-    prepare_stage="control repository fetch"
-    git init -q "$CONTROL_DIR" || fail "Prepare failed at ${prepare_stage}."
-    git -C "$CONTROL_DIR" remote add origin "$control_url" >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
-    if ! git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >"$TEMP_ROOT/control-fetch.log" 2>&1; then
-        sed -E 's#(https://x-access-token:)[^@]+@#\1***@#g' "$TEMP_ROOT/control-fetch.log" | tail -n 20 >&2 || true
-        fail "Prepare failed at ${prepare_stage}."
+    token="$(jq -r '.token' "$TEMP_ROOT/job.json")"
+    printf '::add-mask::%s\n' "$token"
+    store_clone_token "$token"
+    if jq -e '.logs == true' "$TEMP_ROOT/job.json" >/dev/null 2>&1; then
+        : > "$LOGS_FLAG_PATH"
     fi
-    git -C "$CONTROL_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
-
-    prepare_stage="queued job lookup"
-    job_file="$CONTROL_DIR/$jobs_path/$job_id.json"
-    [[ -f "$job_file" ]] || fail "Prepare failed at ${prepare_stage}."
 
     prepare_stage="queued job validation"
+    jq '.config' "$TEMP_ROOT/job.json" > "$CONFIG_PATH" || fail "Prepare failed at ${prepare_stage}."
+    chmod 600 "$CONFIG_PATH"
+    rm -f "$TEMP_ROOT/job.json"
     jq -e '
         (.source.repository | type == "string" and length > 0)
         and (.source.sha | type == "string" and test("^[0-9A-Fa-f]{7,64}$"))
@@ -183,12 +311,11 @@ prepare() {
         and (if ((.ci // {}).kind // "push") == "pull_request"
              then ((.ci // {}).pull_request | type == "number" and . > 0)
              else true end)
-    ' "$job_file" >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
+    ' "$CONFIG_PATH" >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
 
     prepare_stage="runtime configuration"
-    cp "$job_file" "$CONFIG_PATH" || fail "Prepare failed at ${prepare_stage}."
-    chmod 600 "$CONFIG_PATH"
     mask_config_values
+    configure_private_git "$token"
 
     prepare_stage="source reference validation"
     source_repo="$(jq -er '.source.repository' "$CONFIG_PATH")" || fail "Prepare failed at ${prepare_stage}."
@@ -198,11 +325,10 @@ prepare() {
 
     prepare_stage="source repository fetch"
     git init -q "$SOURCE_DIR" || fail "Prepare failed at ${prepare_stage}."
-    git -C "$SOURCE_DIR" remote add origin \
-        "https://x-access-token:${GITHUB_PAT}@github.com/${source_repo}.git" \
-        >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
+    git -C "$SOURCE_DIR" remote add origin "https://github.com/${source_repo}.git" >/dev/null 2>&1 \
+        || fail "Prepare failed at ${prepare_stage}."
     if ! git -C "$SOURCE_DIR" fetch --quiet --no-tags --depth=1 origin "$source_sha" >"$TEMP_ROOT/source-fetch.log" 2>&1; then
-        sed -E 's#(https://x-access-token:)[^@]+@#\1***@#g' "$TEMP_ROOT/source-fetch.log" | tail -n 20 >&2 || true
+        scrub_tokens < "$TEMP_ROOT/source-fetch.log" | tail -n 20 >&2 || true
         fail "Prepare failed at ${prepare_stage}."
     fi
     git -C "$SOURCE_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Prepare failed at ${prepare_stage}."
@@ -222,7 +348,7 @@ prepare() {
     prepare_stage="changelog history"
     resolve_changelog_history "$source_sha" || fail "Prepare failed at ${prepare_stage}."
 
-    chmod 700 "$CONTROL_DIR" "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
+    chmod 700 "$SOURCE_DIR" "$OUTPUT_DIR" "$DERIVED_DATA_DIR"
     write_runtime_environment
     publish_cache_key
     printf '%s\n' 'Prepare completed.'
@@ -449,72 +575,46 @@ run_prebuild() {
 
 # The public run log only shows a masked tail, and fastlane keeps xcodebuild's own output --
 # where compiler errors are -- in a separate log on the worker, which finalize deletes. A failed
-# lane copies both into the private control repository under logs/<job>, with the error lines
-# gathered into errors.txt, so a failure can be read without exposing source in the public run.
-# Credentials the step holds are scrubbed first. Recording is best effort and never changes the
-# outcome of the build.
+# lane gathers both, with the error lines pulled into errors.txt, and reports the failure to the
+# queue service, which shows the first error on the commit. The full logs are uploaded too when
+# the service says it can keep them, so a failure can be read without exposing source in the
+# public run. Credentials the step holds are scrubbed first. Recording is best effort and never
+# changes the outcome of the build.
 record_failure_logs() {
     local lane_log="$1"
-    local job_id="${IOS_CI_JOB_ID:-}"
-    local control_branch="${CI_CONTROL_BRANCH:-main}"
-    local logs_path="${CI_CONTROL_LOGS_PATH:-logs}"
-    local directory
-    local destination
     local log
-    local attempt
+    local name
 
-    [[ "$job_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]] || return 0
-    [[ "$logs_path" =~ ^[A-Za-z0-9._/-]+$ ]] || return 0
-    [[ "$logs_path" != *..* ]] || return 0
-    [[ "$control_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || return 0
-    [[ -d "$CONTROL_DIR/.git" ]] || return 0
-    directory="$logs_path/$job_id"
+    backend_ready || return 0
+    rm -rf "$FAILURE_DIR"
+    mkdir -p "$FAILURE_DIR" || return 0
 
-    for attempt in 1 2 3 4 5; do
-        git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >/dev/null 2>&1 || break
-        git -C "$CONTROL_DIR" checkout --quiet --force --detach FETCH_HEAD >/dev/null 2>&1 || break
-
-        destination="$CONTROL_DIR/$directory"
-        rm -rf "$destination"
-        mkdir -p "$destination" || break
-        if [[ -f "$lane_log" ]]; then
-            cp "$lane_log" "$destination/fastlane.log" || break
-        fi
-        for log in "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log"; do
-            if [[ -s "$log" ]]; then
-                cp "$log" "$destination/$(basename "$log")" || break 2
-            fi
-        done
-        for log in "$HOME"/Library/Logs/gym/*.log; do
-            [[ -f "$log" ]] || continue
-            # GitHub refuses files over 100 MB; the end of the log is where a failure is.
-            tail -c 50000000 "$log" > "$destination/xcodebuild.log"
-        done
-        if [[ -f "$destination/xcodebuild.log" ]]; then
-            grep -n -B 2 -A 6 -E '(^|[^A-Za-z])(error|fatal error): ' "$destination/xcodebuild.log" \
-                > "$destination/errors.txt" 2>/dev/null || true
-        fi
-        perl -pi -e '
-            s#(https://x-access-token:)[^@\s]+@#$1***@#g;
-            for my $name (qw(GITHUB_PAT MATCH_PASSWORD ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY_BASE64)) {
-                my $value = $ENV{$name};
-                s/\Q$value\E/***/g if defined $value && length($value) >= 4;
-            }
-        ' "$destination"/* >/dev/null 2>&1 || break
-
-        git -C "$CONTROL_DIR" add -- "$directory" >/dev/null 2>&1 || break
-        git -C "$CONTROL_DIR" diff --quiet --cached && return 0
-        git -C "$CONTROL_DIR" \
-            -c user.name="github-actions[bot]" \
-            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -qm "Record failed build logs" >/dev/null 2>&1 || break
-        if git -C "$CONTROL_DIR" push -q origin "HEAD:$control_branch" >/dev/null 2>&1; then
-            printf '%s\n' "Logs recorded in the control repository under ${logs_path}/${job_id}."
-            return 0
-        fi
+    [[ -f "$lane_log" ]] && scrub_tokens < "$lane_log" > "$FAILURE_DIR/fastlane.log"
+    for log in "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log"; do
+        [[ -s "$log" ]] && scrub_tokens < "$log" > "$FAILURE_DIR/$(basename "$log")"
     done
+    for log in "$HOME"/Library/Logs/gym/*.log; do
+        [[ -f "$log" ]] || continue
+        # The end of the log is where a failure is.
+        tail -c 50000000 "$log" | scrub_tokens > "$FAILURE_DIR/xcodebuild.log"
+    done
+    if [[ -f "$FAILURE_DIR/xcodebuild.log" ]]; then
+        grep -n -B 2 -A 6 -E '(^|[^A-Za-z])(error|fatal error): ' "$FAILURE_DIR/xcodebuild.log" \
+            2>/dev/null | tail -c 60000 > "$FAILURE_DIR/errors.txt" || true
+    fi
+    # A lane that never got as far as xcodebuild (signing, upload) has its answer in its own log.
+    if [[ ! -s "$FAILURE_DIR/errors.txt" && -f "$FAILURE_DIR/fastlane.log" ]]; then
+        tail -n 60 "$FAILURE_DIR/fastlane.log" | tail -c 60000 > "$FAILURE_DIR/errors.txt"
+    fi
 
-    printf '%s\n' 'Logs could not be recorded in the control repository.' >&2
+    if [[ -f "$LOGS_FLAG_PATH" ]]; then
+        for name in fastlane.log xcodebuild.log dependencies.log prebuild.log errors.txt; do
+            [[ -s "$FAILURE_DIR/$name" ]] || continue
+            backend PUT "/runner/jobs/${IOS_CI_JOB_ID}/logs/${name}" "$FAILURE_DIR/$name" text/plain >/dev/null || true
+        done
+    fi
+
+    report_result failure "" "$FAILURE_DIR/errors.txt" || printf '%s\n' 'The failure could not be reported.' >&2
     return 0
 }
 
@@ -530,6 +630,7 @@ run_lane() {
         FASTLANE_SKIP_UPDATE_CHECK=1 \
         BUNDLE_GEMFILE="$WORKER_ROOT/Gemfile" \
         BUNDLE_PATH="$BUNDLE_ROOT" \
+        IOS_CI_HELPER="$WORKER_ROOT/scripts/ios-builder.sh" \
         bundle exec fastlane ios "$lane" "$@") >"$log_path" 2>&1; then
         printf '%s\n' "${label} log tail:"
         tail -n 160 "$log_path" || true
@@ -544,6 +645,8 @@ build() {
     require_command xcodebuild
     require_command jq
     require_runtime_paths
+    backend_ready && backend_mask
+    refresh_clone_token || printf '%s\n' 'The repository token could not be renewed.' >&2
     assert_xcode_version
     setup_build_cache
     run_prebuild
@@ -551,107 +654,59 @@ build() {
     run_lane ci_build Build "$TEMP_ROOT/build.log" "config:$IOS_CI_CONFIG"
 }
 
-# Branch builds carry a marker key; the commit they publish becomes the starting point of the
-# next changelog. Writing it here rather than at queue time means a build that never reached
-# TestFlight leaves its commits for the build that follows.
-record_build_state() {
-    local control_branch="${CI_CONTROL_BRANCH:-main}"
-    local state_path="${CI_CONTROL_STATE_PATH:-state}"
-    local state_key
-    local source_sha
-    local state_file
-    local existing
-    local existing_time
-    local source_time
-    local attempt
-
-    state_key="$(jq -r '.ci.state_key // empty' "$CONFIG_PATH")" || return 0
-    [[ -n "$state_key" ]] || return 0
-    [[ "$state_key" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 0
-    [[ "$state_key" != *..* ]] || return 0
-    [[ "$state_path" =~ ^[A-Za-z0-9._/-]+$ ]] || return 0
-    [[ "$state_path" != *..* ]] || return 0
-    [[ "$control_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || return 0
-    [[ -d "$CONTROL_DIR/.git" ]] || return 0
-    source_sha="$(jq -er '.source.sha' "$CONFIG_PATH")" || return 0
-    state_file="$state_path/$state_key.json"
-
-    for attempt in 1 2 3 4 5; do
-        git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >/dev/null 2>&1 || break
-        git -C "$CONTROL_DIR" checkout --quiet --force --detach FETCH_HEAD >/dev/null 2>&1 || break
-
-        if [[ -f "$CONTROL_DIR/$state_file" ]]; then
-            existing="$(jq -r '.sha // empty' "$CONTROL_DIR/$state_file" 2>/dev/null || true)"
-            # A slower build finishing after a newer one must not move the marker backwards.
-            # The clone is shallow in the direction of history it was fetched for, so it cannot
-            # answer whether the recorded commit descends from this one; the commit dates of the
-            # two objects are enough to order them, and a tie or a missing object still writes.
-            # A rebuild of the recorded commit still writes: updated_at is when testers last
-            # received a build, and keepalive reads it to tell when TestFlight will expire it.
-            if [[ -n "$existing" && "$existing" != "$source_sha" ]]; then
-                git -C "$SOURCE_DIR" fetch --quiet --no-tags --depth=1 origin "$existing" >/dev/null 2>&1 || true
-                existing_time="$(git -C "$SOURCE_DIR" show -s --format=%ct "$existing" 2>/dev/null || true)"
-                source_time="$(git -C "$SOURCE_DIR" show -s --format=%ct "$source_sha" 2>/dev/null || true)"
-                if [[ "$existing_time" =~ ^[0-9]+$ && "$source_time" =~ ^[0-9]+$ ]] \
-                    && (( source_time < existing_time )); then
-                    return 0
-                fi
-            fi
-        fi
-
-        mkdir -p "$CONTROL_DIR/$state_path" || break
-        jq -n --arg sha "$source_sha" --arg updated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{sha: $sha, updated_at: $updated}' > "$CONTROL_DIR/$state_file" || break
-        git -C "$CONTROL_DIR" add -- "$state_file" >/dev/null 2>&1 || break
-        git -C "$CONTROL_DIR" diff --quiet --cached && return 0
-        git -C "$CONTROL_DIR" \
-            -c user.name="github-actions[bot]" \
-            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -qm "Record published build" >/dev/null 2>&1 || break
-        git -C "$CONTROL_DIR" push -q origin "HEAD:$control_branch" >/dev/null 2>&1 && return 0
-    done
-
-    # The marker only shapes the next changelog; a build that already reached TestFlight
-    # must not be reported as failed because the marker could not be written.
-    printf '%s\n' 'Publish completed without recording the build marker.' >&2
-    return 0
-}
-
 # A refresh rebuilds a commit that already reached TestFlight, and its build number still lands
 # above everything uploaded so far. If a newer commit was published while it was queued or
 # building, uploading the refresh would hand testers the older code as the latest build, so the
 # upload is dropped. Anything that cannot be read leaves the refresh to publish as queued.
 refresh_superseded() {
-    local control_branch="${CI_CONTROL_BRANCH:-main}"
-    local state_path="${CI_CONTROL_STATE_PATH:-state}"
-    local state_key
-    local source_sha
-    local recorded
+    local answer
 
     [[ "$(jq -r '.ci.kind // "push"' "$CONFIG_PATH" 2>/dev/null)" == "refresh" ]] || return 1
-    state_key="$(jq -r '.ci.state_key // empty' "$CONFIG_PATH")" || return 1
-    [[ "$state_key" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "$state_key" != *..* ]] || return 1
-    [[ "$state_path" =~ ^[A-Za-z0-9._/-]+$ && "$state_path" != *..* ]] || return 1
-    [[ "$control_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
-    [[ -d "$CONTROL_DIR/.git" ]] || return 1
-    source_sha="$(jq -er '.source.sha' "$CONFIG_PATH")" || return 1
+    answer="$(backend GET "/runner/jobs/${IOS_CI_JOB_ID}/superseded" | jq -r '.superseded // false')" || return 1
+    [[ "$answer" == "true" ]]
+}
 
-    git -C "$CONTROL_DIR" fetch --quiet --no-tags --depth=1 origin "$control_branch" >/dev/null 2>&1 || return 1
-    git -C "$CONTROL_DIR" checkout --quiet --force --detach FETCH_HEAD >/dev/null 2>&1 || return 1
-    recorded="$(jq -r '.sha // empty' "$CONTROL_DIR/$state_path/$state_key.json" 2>/dev/null || true)"
-    [[ -n "$recorded" && "$recorded" != "$source_sha" ]]
+# What testers see: pull request builds append the pull request number to the build.
+published_build_label() {
+    local number=""
+    [[ -f "$CLAIMED_BUILD_PATH" ]] && number="$(cat "$CLAIMED_BUILD_PATH")"
+    [[ "$number" =~ ^[0-9]+$ ]] || return 0
+    if [[ "$(jq -r '.ci.kind // "push"' "$CONFIG_PATH" 2>/dev/null)" == "pull_request" ]]; then
+        number="${number}.$(jq -r '.ci.pull_request' "$CONFIG_PATH")"
+    fi
+    printf '%s\n' "$number"
 }
 
 publish() {
     require_command jq
     require_runtime_paths
+    backend_ready && backend_mask
     if refresh_superseded; then
         printf '%s\n' 'Publish skipped: a newer build reached TestFlight after this refresh was queued.'
+        report_result skipped "a newer build reached TestFlight" || true
         return 0
     fi
+    refresh_clone_token || printf '%s\n' 'The repository token could not be renewed.' >&2
     install_dependencies
     run_lane ci_publish Publish "$TEMP_ROOT/publish.log" "config:$IOS_CI_CONFIG"
-    record_build_state
+
+    # Closing the job on the service records the commit as published, so the next changelog
+    # starts there; a build that never reached TestFlight leaves its commits for the next one.
+    local label
+    label="$(published_build_label)"
+    if ! report_result success "${label:+build ${label} is on TestFlight}"; then
+        # The build is on TestFlight whatever the service heard, so this is never a failure.
+        printf '%s\n' 'Publish completed without recording the result.' >&2
+    fi
+}
+
+# Runs when a step failed or the job was cancelled. A failure the lane already reported is
+# ignored by the service; this one covers the rest -- a step that died before any lane ran.
+report_failure() {
+    backend_ready || return 0
+    backend_mask
+    report_result failure "${IOS_CI_REPORT_DESCRIPTION:-build failed}" || true
+    printf '%s\n' 'Report completed.'
 }
 
 provision() {
@@ -693,167 +748,17 @@ provision() {
         "force:$force"
 }
 
-# Reads an ISO 8601 UTC timestamp -- the form record_build_state writes -- as epoch seconds.
-iso_epoch() {
-    date -u -d "$1" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null
-}
-
-new_job_id() {
-    local id
-    id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || true)"
-    id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
-    [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || return 1
-    printf '%s\n' "$id"
-}
-
-# TestFlight expires a build 90 days after upload, so an app nobody has pushed to in that long
-# disappears from every tester's device. The state marker says when each branch last reached
-# TestFlight; once the newest one for an app is old enough, the job that published it is queued
-# again as a refresh -- same commit, same configuration, the next build number -- and the build
-# workflow is dispatched for it exactly as a push would. The job and state files are private,
-# and this runs in a public repository, so nothing here prints what it found.
-keepalive() {
-    require_command git
-    require_command jq
-    require_command curl
-
-    local control_repo="${CI_CONTROL_REPO:-}"
-    local control_branch="${CI_CONTROL_BRANCH:-main}"
-    local jobs_path="${CI_CONTROL_JOBS_PATH:-jobs}"
-    local state_path="${CI_CONTROL_STATE_PATH:-state}"
-    local max_age_days="${IOS_CI_KEEPALIVE_DAYS:-80}"
-    local dry_run="${IOS_CI_KEEPALIVE_DRY_RUN:-false}"
-    local index="$TEMP_ROOT/keepalive-jobs.tsv"
-    local candidates="$TEMP_ROOT/keepalive-candidates.tsv"
-    local queue_dir="$TEMP_ROOT/keepalive-queue"
-    local cutoff
-    local state_file
-    local state_key
-    local state_sha
-    local updated
-    local updated_epoch
-    local match
-    local app
-    local epoch
-    local job_path
-    local job_id
-    local short_sha
-    local attempt
-    local pushed=false
-    local -a queued=()
-
-    [[ "$control_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Keepalive failed."
-    [[ "$control_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Keepalive failed."
-    [[ "$jobs_path" =~ ^[A-Za-z0-9._/-]+$ && "$jobs_path" != *..* ]] || fail "Keepalive failed."
-    [[ "$state_path" =~ ^[A-Za-z0-9._/-]+$ && "$state_path" != *..* ]] || fail "Keepalive failed."
-    # Past 89 days the build being protected may already be gone by the time the refresh lands.
-    [[ "$max_age_days" =~ ^[0-9]+$ ]] && (( max_age_days >= 1 && max_age_days <= 89 )) || fail "Keepalive failed."
-    [[ "$dry_run" =~ ^(true|false)$ ]] || fail "Keepalive failed."
-    [[ -n "${GITHUB_PAT:-}" ]] || fail "Keepalive failed."
-    [[ "$dry_run" == "true" || -n "${DISPATCH_TOKEN:-}" ]] || fail "Keepalive failed."
-    [[ "$dry_run" == "true" || -n "${GITHUB_REPOSITORY:-}" ]] || fail "Keepalive failed."
-
-    configure_private_git "$GITHUB_PAT"
-    rm -rf "$CONTROL_DIR" "$queue_dir"
-    mkdir -p "$queue_dir" || fail "Keepalive failed."
-    git init -q "$CONTROL_DIR" || fail "Keepalive failed."
-    git -C "$CONTROL_DIR" remote add origin \
-        "https://x-access-token:${GITHUB_PAT}@github.com/${control_repo}.git" >/dev/null 2>&1 || fail "Keepalive failed."
-    # Full history: the order jobs were queued in is what picks the newest job for a commit.
-    git -C "$CONTROL_DIR" fetch --quiet --no-tags origin "$control_branch" >/dev/null 2>&1 || fail "Keepalive failed."
-    git -C "$CONTROL_DIR" checkout --quiet --detach FETCH_HEAD >/dev/null 2>&1 || fail "Keepalive failed."
-
-    # Every branch job, newest first, as "<state key>\t<sha>\t<app>\t<path>". A pull request
-    # build never writes a marker and only reaches internal testers, so it has nothing to refresh.
-    git -C "$CONTROL_DIR" log --format= --name-only --diff-filter=A -- "$jobs_path" 2>/dev/null \
-        | while IFS= read -r job_path; do
-            [[ "$job_path" == *.json && -f "$CONTROL_DIR/$job_path" ]] || continue
-            jq -r --arg path "$job_path" '
-                select(((.ci // {}).kind // "push") != "pull_request")
-                | select((.ci.state_key // "") != "" and (.source.sha // "") != "")
-                | [.ci.state_key, .source.sha, "\(.source.repository)|\(.project.path)", $path]
-                | @tsv
-            ' "$CONTROL_DIR/$job_path" 2>/dev/null || true
-        done > "$index"
-
-    # One line per published branch that can still be rebuilt: "<app>\t<epoch>\t<job path>".
-    : > "$candidates"
-    for state_file in "$CONTROL_DIR/$state_path"/*.json; do
-        [[ -f "$state_file" ]] || continue
-        state_key="$(basename "$state_file" .json)"
-        state_sha="$(jq -r '.sha // empty' "$state_file" 2>/dev/null || true)"
-        updated="$(jq -r '.updated_at // empty' "$state_file" 2>/dev/null || true)"
-        updated_epoch="$(iso_epoch "$updated" || true)"
-        [[ -n "$state_sha" && "$updated_epoch" =~ ^[0-9]+$ ]] || continue
-        match="$(awk -F'\t' -v key="$state_key" -v sha="$state_sha" \
-            '$1 == key && $2 == sha { print $3 "\t" $4; exit }' "$index")"
-        [[ -n "$match" ]] || continue
-        printf '%s\t%s\t%s\n' "${match%%$'\t'*}" "$updated_epoch" "${match#*$'\t'}" >> "$candidates"
-    done
-
-    # Testers of an app get whichever branch published last, so that is the only one to
-    # rebuild: refreshing an older branch would put its code above the newer one in TestFlight.
-    cutoff=$(( $(date -u +%s) - max_age_days * 86400 ))
-    while IFS=$'\t' read -r app epoch job_path; do
-        (( epoch <= cutoff )) || continue
-        job_id="$(new_job_id)" || fail "Keepalive failed."
-        short_sha="$(jq -r '.source.sha[0:12]' "$CONTROL_DIR/$job_path")" || fail "Keepalive failed."
-        jq --arg note "Automatic rebuild of ${short_sha} so this app stays available in TestFlight. Nothing has changed since the previous build." '
-            .ci = ((.ci // {}) | del(.previous_sha) | .kind = "refresh")
-            | .testflight = ((.testflight // {}) + {changelog: $note, notify_external_testers: false})
-            | .project.targets |= map(del(.changelog))
-        ' "$CONTROL_DIR/$job_path" > "$queue_dir/$job_id.json" || fail "Keepalive failed."
-        queued+=("$job_id")
-    done < <(sort -t $'\t' -k1,1 -k2,2nr "$candidates" | awk -F'\t' '!seen[$1]++')
-
-    printf 'Checked %s apps; %s due for a refresh.\n' \
-        "$(cut -f1 "$candidates" | sort -u | wc -l | tr -d ' ')" "${#queued[@]}"
-    (( ${#queued[@]} > 0 )) || return 0
-    if [[ "$dry_run" == "true" ]]; then
-        printf '%s\n' 'Dry run: nothing queued.'
-        return 0
-    fi
-
-    for attempt in 1 2 3 4 5; do
-        git -C "$CONTROL_DIR" fetch --quiet --no-tags origin "$control_branch" >/dev/null 2>&1 || continue
-        git -C "$CONTROL_DIR" checkout --quiet --force --detach FETCH_HEAD >/dev/null 2>&1 || continue
-        mkdir -p "$CONTROL_DIR/$jobs_path" || break
-        cp "$queue_dir"/*.json "$CONTROL_DIR/$jobs_path/" || break
-        git -C "$CONTROL_DIR" add -- "$jobs_path" >/dev/null 2>&1 || break
-        git -C "$CONTROL_DIR" \
-            -c user.name="github-actions[bot]" \
-            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -qm "Queue build" >/dev/null 2>&1 || break
-        if git -C "$CONTROL_DIR" push -q origin "HEAD:$control_branch" >/dev/null 2>&1; then
-            pushed=true
-            break
-        fi
-    done
-    [[ "$pushed" == "true" ]] || fail "Keepalive failed."
-
-    # A repository_dispatch sent with the workflow's own token is one of the events that still
-    # starts a workflow run, so the build workflow picks these up like any other queued job.
-    for job_id in "${queued[@]}"; do
-        curl -fsS -o /dev/null -X POST \
-            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/dispatches" \
-            -d "$(jq -cn --arg job "$job_id" '{event_type: "build", client_payload: {job: $job}}')" \
-            || fail "Keepalive failed."
-        printf 'Queued refresh build %s.\n' "$job_id"
-    done
-}
-
 # CACHE_ROOT is deliberately absent here: the workflow saves it in the step before this one,
 # and everything else a job put in RUNNER_TEMP, source included, goes.
 finalize() {
-    rm -rf "$SOURCE_DIR" "$CONTROL_DIR" "$CONFIG_PATH" "$CONFIG_PATH.next" "$OUTPUT_DIR" \
-        "$DERIVED_DATA_DIR" "$GIT_CONFIG_PATH" "$BUNDLE_ROOT" \
+    rm -rf "$SOURCE_DIR" "$CONFIG_PATH" "$CONFIG_PATH.next" "$OUTPUT_DIR" \
+        "$DERIVED_DATA_DIR" "$GIT_CONFIG_PATH" "$BUNDLE_ROOT" "$FAILURE_DIR" \
+        "$CLONE_TOKEN_PATH" "$LOGS_FLAG_PATH" "$CLAIMED_BUILD_PATH" \
         "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log" \
         "$TEMP_ROOT/build.log" "$TEMP_ROOT/publish.log" "$TEMP_ROOT/provision.log" \
-        "$TEMP_ROOT/control-fetch.log" "$TEMP_ROOT/source-fetch.log" \
-        "$TEMP_ROOT/mtime-blobs.tsv" "$TEMP_ROOT/mtime-plan.tsv" \
-        "$TEMP_ROOT/keepalive-jobs.tsv" "$TEMP_ROOT/keepalive-candidates.tsv" "$TEMP_ROOT/keepalive-queue"
+        "$TEMP_ROOT/source-fetch.log" "$TEMP_ROOT/job.json" "$TEMP_ROOT/report.json" \
+        "$TEMP_ROOT/claim.json" "$TEMP_ROOT/backend-headers" "$TEMP_ROOT/backend-response" \
+        "$TEMP_ROOT/mtime-blobs.tsv" "$TEMP_ROOT/mtime-plan.tsv"
     printf '%s\n' 'Finalize completed.'
 }
 
@@ -870,8 +775,11 @@ case "${1:-}" in
     provision)
         provision
         ;;
-    keepalive)
-        keepalive
+    claim-build-number)
+        claim_build_number "${2:-}" "${3:-}"
+        ;;
+    report-failure)
+        report_failure
         ;;
     finalize)
         finalize

@@ -6,11 +6,14 @@ on:
   repository_dispatch:
     types: [build]
 
+# id-token lets a step ask Actions for a short-lived token that proves which workflow is
+# calling, which is all the queue service needs to know; nothing for it is stored here.
 permissions:
   contents: read
+  id-token: write
 
-# Each dispatch carries one opaque job. App source workflows serialize repeated pushes per app,
-# while independent apps can build concurrently and retain each pending dispatch.
+# Each dispatch carries one opaque job; independent apps can build concurrently and each
+# pending dispatch is retained.
 
 jobs:
   build:
@@ -33,10 +36,8 @@ jobs:
         id: prepare
         env:
           IOS_CI_JOB_ID: ${{ github.event.client_payload.job }}
-          CI_CONTROL_REPO: ${{ secrets.CI_CONTROL_REPO }}
-          CI_CONTROL_BRANCH: ${{ secrets.CI_CONTROL_BRANCH }}
-          CI_CONTROL_JOBS_PATH: ${{ secrets.CI_CONTROL_JOBS_PATH }}
-          GITHUB_PAT: ${{ secrets.CI_GITHUB_PAT }}
+          CI_BACKEND_URL: ${{ secrets.CI_BACKEND_URL }}
+          CI_BACKEND_AUDIENCE: ${{ secrets.CI_BACKEND_AUDIENCE }}
         run: bash scripts/ios-builder.sh prepare
 
       # Which app a dispatch builds is only known once Prepare has read the queued job, so the
@@ -63,7 +64,8 @@ jobs:
       - name: Build
         env:
           IOS_CI_JOB_ID: ${{ github.event.client_payload.job }}
-          CI_CONTROL_BRANCH: ${{ secrets.CI_CONTROL_BRANCH }}
+          CI_BACKEND_URL: ${{ secrets.CI_BACKEND_URL }}
+          CI_BACKEND_AUDIENCE: ${{ secrets.CI_BACKEND_AUDIENCE }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -75,13 +77,24 @@ jobs:
         if: success()
         env:
           IOS_CI_JOB_ID: ${{ github.event.client_payload.job }}
-          CI_CONTROL_BRANCH: ${{ secrets.CI_CONTROL_BRANCH }}
-          CI_CONTROL_STATE_PATH: ${{ secrets.CI_CONTROL_STATE_PATH }}
+          CI_BACKEND_URL: ${{ secrets.CI_BACKEND_URL }}
+          CI_BACKEND_AUDIENCE: ${{ secrets.CI_BACKEND_AUDIENCE }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
         run: bash scripts/ios-builder.sh publish
+
+      # A lane that fails reports its own errors; this covers a step that died before any lane
+      # ran, and a cancelled job. The service ignores it for a build it has already closed.
+      - name: Report
+        if: failure() || cancelled()
+        env:
+          IOS_CI_JOB_ID: ${{ github.event.client_payload.job }}
+          CI_BACKEND_URL: ${{ secrets.CI_BACKEND_URL }}
+          CI_BACKEND_AUDIENCE: ${{ secrets.CI_BACKEND_AUDIENCE }}
+          IOS_CI_REPORT_DESCRIPTION: ${{ cancelled() && 'build cancelled' || 'build failed' }}
+        run: bash scripts/ios-builder.sh report-failure
 
       # Both saves must precede Finalize, which wipes what the job left in RUNNER_TEMP. A build
       # that failed still compiled something worth carrying into the next attempt, so neither
