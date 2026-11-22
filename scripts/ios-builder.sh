@@ -705,7 +705,9 @@ publish() {
 report_failure() {
     backend_ready || return 0
     backend_mask
-    report_result failure "${IOS_CI_REPORT_DESCRIPTION:-build failed}" || true
+    local description="build failed"
+    [[ "${IOS_CI_JOB_STATUS:-}" == "cancelled" ]] && description="build cancelled"
+    report_result failure "$description" || true
     printf '%s\n' 'Report completed.'
 }
 
