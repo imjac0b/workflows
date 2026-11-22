@@ -573,6 +573,32 @@ run_prebuild() {
     fi
 }
 
+# Whether `metal` resolves for device builds, which is what compiling .metal files needs.
+metal_toolchain_ready() {
+    xcrun -sdk iphoneos metal --version >/dev/null 2>&1
+}
+
+# Apps that compile Metal shaders set "metal_toolchain": true under "build". Recent Xcode images
+# ship the toolchain already, so it is only downloaded when the worker turns out not to have it
+# (the download needs no sudo on most setups, and is retried with it where it does).
+ensure_metal_toolchain() {
+    jq -e '.build.metal_toolchain == true' "$IOS_CI_CONFIG" >/dev/null 2>&1 || return 0
+
+    if metal_toolchain_ready; then
+        printf '%s\n' 'Metal toolchain already installed.'
+        return 0
+    fi
+
+    printf '%s\n' 'Installing the Metal toolchain.'
+    if ! xcodebuild -downloadComponent MetalToolchain >"$TEMP_ROOT/metal.log" 2>&1 \
+        && ! sudo -n xcodebuild -downloadComponent MetalToolchain >>"$TEMP_ROOT/metal.log" 2>&1; then
+        tail -n 20 "$TEMP_ROOT/metal.log" >&2 || true
+        fail "The Metal toolchain could not be installed."
+    fi
+    metal_toolchain_ready || fail "The Metal toolchain is still missing after installing it."
+    printf '%s\n' 'Metal toolchain installed.'
+}
+
 # The public run log only shows a masked tail, and fastlane keeps xcodebuild's own output --
 # where compiler errors are -- in a separate log on the worker, which finalize deletes. A failed
 # lane gathers both, with the error lines pulled into errors.txt, and reports the failure to the
@@ -649,6 +675,7 @@ build() {
     refresh_clone_token || printf '%s\n' 'The repository token could not be renewed.' >&2
     assert_xcode_version
     setup_build_cache
+    ensure_metal_toolchain
     run_prebuild
     install_dependencies
     run_lane ci_build Build "$TEMP_ROOT/build.log" "config:$IOS_CI_CONFIG"
@@ -756,7 +783,7 @@ finalize() {
     rm -rf "$SOURCE_DIR" "$CONFIG_PATH" "$CONFIG_PATH.next" "$OUTPUT_DIR" \
         "$DERIVED_DATA_DIR" "$GIT_CONFIG_PATH" "$BUNDLE_ROOT" "$FAILURE_DIR" \
         "$CLONE_TOKEN_PATH" "$LOGS_FLAG_PATH" "$CLAIMED_BUILD_PATH" \
-        "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log" \
+        "$TEMP_ROOT/dependencies.log" "$TEMP_ROOT/prebuild.log" "$TEMP_ROOT/metal.log" \
         "$TEMP_ROOT/build.log" "$TEMP_ROOT/publish.log" "$TEMP_ROOT/provision.log" \
         "$TEMP_ROOT/source-fetch.log" "$TEMP_ROOT/job.json" "$TEMP_ROOT/report.json" \
         "$TEMP_ROOT/claim.json" "$TEMP_ROOT/backend-headers" "$TEMP_ROOT/backend-response" \
