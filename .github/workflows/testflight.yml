@@ -93,7 +93,7 @@ jobs:
           IOS_CI_JOB_ID: ${{ github.event.client_payload.job }}
           CI_BACKEND_URL: ${{ secrets.CI_BACKEND_URL }}
           CI_BACKEND_AUDIENCE: ${{ secrets.CI_BACKEND_AUDIENCE }}
-          IOS_CI_REPORT_DESCRIPTION: ${{ cancelled() && 'build cancelled' || 'build failed' }}
+          IOS_CI_JOB_STATUS: ${{ job.status }}
         run: bash scripts/ios-builder.sh report-failure
 
       # Both saves must precede Finalize, which wipes what the job left in RUNNER_TEMP. A build
